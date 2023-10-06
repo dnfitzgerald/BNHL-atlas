@@ -1,0 +1,115 @@
+---
+title: "Create Seurat objects - 5prime"
+author: Tobias Roider
+date: "Last compiled on `r format(Sys.time(), '%d %B, %Y')`"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r options, include=FALSE, warning = FALSE}
+library(knitr)
+opts_chunk$set(echo=TRUE, tidy=FALSE, include=TRUE, message=FALSE,
+               dpi = 100, cache = FALSE, warning = FALSE)
+```
+
+# Load packages & read data
+```{r message=FALSE, warning=FALSE}
+
+library(Seurat)
+library(tidyverse)
+library(readxl)
+load("output/sampleList.RData")
+
+```
+
+# Define data directory
+```{r}
+
+data_directory <- "/g/huber/projects/CITEseq/cellranger_out"
+
+```
+
+# Localize files
+```{r warning=FALSE, paged.print=TRUE}
+
+# Localize cellranger files
+filenames.full <- list.files(data_directory, pattern = "5prime", full.names = T) %>% 
+  paste0(., "/outs/per_sample_outs/xyz/count/sample_feature_bc_matrix")
+
+# Extract sample names
+samples <- strsplit(filenames.full, split = "/") %>% 
+  sapply(., "[[", 7) %>% 
+  substr(1, 8)
+
+for (i in 1:length(filenames.full)) {
+  filenames.full[i] <- gsub(filenames.full[i], pattern = "xyz", replacement = samples[i])
+}
+
+samples <- samples %>% substr(3, 8)
+
+```
+
+# Check processed samples
+```{r message=FALSE, warning=FALSE, eval=FALSE}
+
+# Check already available objects
+samples_av <- list.files("output/SeuratObjects_Raw_5prime", pattern = "Raw") %>% 
+  strsplit("_") %>% 
+  sapply("[[", 3) %>% 
+  gsub(.,  pattern = ".rds", replacement = "")
+
+length(samples_av)
+
+filenames.full_subset <- filenames.full[which(!samples %in% samples_av)]
+samples_subset <- setdiff(samples, samples_av)
+
+samples_subset
+
+```
+
+# Create Seurat Objects
+```{r message=FALSE, warning=FALSE, eval=FALSE}
+
+if(!is_empty(filenames.full_subset)){ 
+  
+  sobj <- 
+    lapply(1:length(filenames.full_subset), function(x) {
+    Counts <- Read10X(filenames.full_subset[x])
+   
+    # Create SeuratObject
+    s <- CreateSeuratObject(counts = Counts)
+    
+    # Add Percentage of mitochondrial genes
+    s[["percent.mt"]] <- PercentageFeatureSet(s, pattern = "^MT-")
+    
+    # Add Meta data
+    df <- filter(sampleList, PatientID==samples_subset[x]) %>% 
+      filter(Assay=="5'GEX+VDJ") %>% 
+      select(PatientID, Run, Entity, Age, Sex, Status, Pretreatment, Assay) %>% distinct()
+    
+    s <- AddMetaData(s, metadata = as.character(df), col.name = colnames(df)) 
+    
+    # Add further meta data
+    s <- AddMetaData(s, col.name="Barcode", 
+                     metadata=strsplit(colnames(s), split = "-") %>% purrr::map(1) %>% unlist())
+    s <- RenameCells(s, new.names = paste0(s$Barcode, "_", s$PatientID))
+    s <- AddMetaData(s, col.name="Barcode_full", metadata=colnames(s))
+    
+    return(s)
+  
+    })
+  
+  names(sobj) <- samples_subset
+  
+  # Save objects
+  for(i in 1:length(sobj)){
+    saveRDS(object = sobj[[i]], 
+            file = paste0("output/SeuratObjects_Raw_5prime/SeuratObject_Raw_", 
+                          samples_subset[i], ".rds"))
+  }
+  
+}
+
+
+```

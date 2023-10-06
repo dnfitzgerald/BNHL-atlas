@@ -1,0 +1,1002 @@
+---
+title: "Cluster B cells sample-wise"
+author: Tobias Roider
+date: "Last compiled on `r format(Sys.time(), '%d %B, %Y, %X')`"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r options, include=FALSE, warning = FALSE}
+library(knitr)
+opts_chunk$set(echo=TRUE, tidy=FALSE, include=TRUE, message=FALSE,
+               dpi = 100, cache = FALSE, warning = FALSE)
+options(bitmapType = "cairo")
+
+```
+
+# Load packages and functions
+```{r Load packages and functions}
+
+library(Seurat)
+library(tidyverse)
+library(readxl)
+library(plotly)
+source("code/QCplots.R")
+source("code/SeuratProc.R")
+
+sobjs_B <- readRDS("output/List_SeuratObjects_B.rds")
+
+```
+
+# Identify clusters of B cells
+## Run 1
+### LN0050
+```{r}
+
+sobj <- sobjs_B$LN0050
+
+sobj <- FindClusters(sobj, resolution = 0.2)
+
+DimPlot_custom3(sobj, group.by = "RNA_snn_res.0.2")
+KappaLambda_plot(sobj)
+
+sobj$seurat_clusters <- sobj$RNA_snn_res.0.2
+sobjs_B$LN0050 <- sobj
+
+```
+
+### LN0097
+```{r}
+
+sobj <- sobjs_B$LN0097
+
+sobj <- FindClusters(sobj, resolution = 0.2)
+DimPlot_custom3(sobj, group.by = "RNA_snn_res.0.2")
+KappaLambda_plot(sobj)
+
+sobj$CT_rnaCluster <- 
+  sobj@meta.data %>% 
+  mutate(CT_rnaCluster=ifelse(RNA_snn_res.0.2 %in% c(4), "hB", "B")) %>% 
+  pull(CT_rnaCluster)
+
+DimPlot_custom3(sobj, group.by = "CT_rnaCluster")
+
+sobj$seurat_clusters <- sobj$RNA_snn_res.0.2
+sobjs_B$LN0097 <- sobj
+
+```
+
+## Run 2
+### LN0100
+```{r}
+
+sobj <- sobjs_B$LN0100
+
+sobj <- SeuratProc_short(sobj, dims_nn = 1:30, res = 0.1, dims_umap = 1:20)
+DimPlot_custom3(sobj, group.by = "RNA_snn_res.0.1")
+KappaLambda_plot(sobj)
+
+sobj$seurat_clusters <- sobj$RNA_snn_res.0.1
+sobjs_B$LN0100 <- sobj
+
+```
+
+### LN0107
+```{r}
+
+sobj <- sobjs_B$LN0107
+
+sobj <- SeuratProc_short(sobj, dims_nn = 1:20, res = 0.2, dims_umap = 1:10)
+DimPlot_custom3(sobj, group.by = "RNA_snn_res.0.2")
+KappaLambda_plot(sobj)
+
+sobj$seurat_clusters <- sobj$RNA_snn_res.0.2
+sobjs_B$LN0107 <- sobj
+
+```
+
+## Run 3
+### LN0110
+```{r}
+
+sobj <- sobjs_B$LN0110
+
+sobj <- FindClusters(sobj, resolution = 0.3)
+DimPlot_custom3(sobj, group.by = "RNA_snn_res.0.3")
+KappaLambda_plot(sobj)
+
+sobj$CT_rnaCluster <- 
+  sobj@meta.data %>% 
+  mutate(CT_rnaCluster=ifelse(RNA_snn_res.0.3 %in% c(4, 5), "hB", "B")) %>% 
+  pull(CT_rnaCluster)
+
+DimPlot_custom3(sobj, group.by = "CT_rnaCluster")
+
+sobj$seurat_clusters <- sobj$RNA_snn_res.0.3
+sobjs_B$LN0110 <- sobj
+
+```
+
+### LN0152
+```{r}
+
+sobj <- sobjs_B$LN0152
+
+sobj <- FindClusters(sobj, resolution = 0.2)
+DimPlot_custom3(sobj, group.by = "RNA_snn_res.0.2")
+KappaLambda_plot(sobj)
+
+sobj$CT_rnaCluster <- 
+  sobj@meta.data %>% 
+  mutate(CT_rnaCluster=ifelse(RNA_snn_res.0.2 %in% c(3, 4), "hB", "B")) %>% 
+  pull(CT_rnaCluster)
+
+DimPlot_custom3(sobj, group.by = "CT_rnaCluster")
+
+sobj$seurat_clusters <- sobj$RNA_snn_res.0.2
+sobjs_B$LN0152 <- sobj
+
+```
+
+### LN0002
+```{r}
+
+sobj <- sobjs_B$LN0002
+
+sobj <- FindClusters(sobj, res = 0.2)
+DimPlot_custom3(sobj, group.by = "RNA_snn_res.0.2")
+KappaLambda_plot(sobj)
+
+sobj$CT_rnaCluster <- 
+  sobj@meta.data %>% 
+  mutate(CT_rnaCluster=ifelse(RNA_snn_res.0.2 %in% c(2), "hB", "B")) %>% 
+  pull(CT_rnaCluster)
+
+sobj$seurat_clusters <- sobj$RNA_snn_res.0.2
+sobjs_B$LN0002 <- sobj
+
+```
+
+### LN0144
+```{r}
+
+sobj <- sobjs_B$LN0144
+
+DimPlot_custom3(sobj, group.by = "RNA_snn_res.0.4")
+FeaturePlot(sobj, features = ".CD3")
+sobj <- subset(sobj, subset=RNA_snn_res.0.4 %in% c(0:3, 5))
+
+sobj <- SeuratProc_short(sobj, dims_nn = 1:10, res = 0.2, dims_umap = 1:10)
+DimPlot_custom3(sobj, group.by = "RNA_snn_res.0.2")
+KappaLambda_plot(sobj)
+
+sobj$CT_rnaCluster <- 
+  sobj@meta.data %>% 
+  mutate(CT_rnaCluster=ifelse(RNA_snn_res.0.2 %in% c(2), "hB", "B")) %>% 
+  pull(CT_rnaCluster)
+
+DimPlot_custom3(sobj, group.by = "CT_rnaCluster")
+
+sobj$seurat_clusters <- sobj$RNA_snn_res.0.2
+sobjs_B$LN0144 <- sobj
+
+```
+
+## Run 4
+### LN0211
+```{r}
+
+sobj <- sobjs_B$LN0211
+print(unique(sobj$Entity))
+
+sobj <- FindClusters(sobj, resolution = 0.3)
+DimPlot_custom3(sobj, group.by = "RNA_snn_res.0.3")
+KappaLambda_plot(sobj)
+
+sobj@meta.data$CT_rnaCluster <- "hB"
+
+sobj$seurat_clusters <- sobj$RNA_snn_res.0.3
+sobjs_B$LN0211 <- sobj
+
+```
+
+### LN0135
+```{r}
+
+sobj <- sobjs_B$LN0135
+
+sobj <- SeuratProc_short(sobj, dims_nn = 1:13, res = 0.1, dims_umap = 1:14)
+DimPlot_custom3(sobj, group.by = "RNA_snn_res.0.1")
+KappaLambda_plot(sobj)
+
+sobj$CT_rnaCluster <- 
+  sobj@meta.data %>% 
+  mutate(CT_rnaCluster=ifelse(RNA_snn_res.0.1 %in% c(2), "hB", "B")) %>% 
+  pull(CT_rnaCluster)
+
+DimPlot_custom3(sobj, group.by = "CT_rnaCluster")
+
+sobj$seurat_clusters <- sobj$RNA_snn_res.0.1
+sobjs_B$LN0135 <- sobj
+
+```
+
+### LN0193
+```{r}
+
+sobj <- sobjs_B$LN0193
+sobj <- FindClusters(sobj, resolution = 0.3)
+
+DimPlot_custom3(sobj, group.by = "RNA_snn_res.0.3")
+KappaLambda_plot(sobj)
+
+sobj$CT_rnaCluster <-
+  sobj@meta.data %>% 
+  mutate(CT_rnaCluster=ifelse(RNA_snn_res.0.3 %in% c(1, 2), "hB", "B")) %>% 
+  pull(CT_rnaCluster)
+
+DimPlot_custom3(sobj, group.by = "CT_rnaCluster")
+sobj$seurat_clusters <- sobj$RNA_snn_res.0.3
+
+sobjs_B$LN0193 <- sobj
+
+```
+
+### LN0179
+```{r}
+
+sobj <- sobjs_B$LN0179
+
+sobj <- FindClusters(sobj, resolution = 0.3)
+DimPlot_custom3(sobj, group.by = "RNA_snn_res.0.3")
+KappaLambda_plot(sobj)
+
+sobj$CT_rnaCluster <-
+  sobj@meta.data %>% 
+  mutate(CT_rnaCluster=ifelse(RNA_snn_res.0.3 %in% c(2), "hB", "B")) %>% 
+  pull(CT_rnaCluster)
+
+DimPlot_custom3(sobj, group.by = "CT_rnaCluster")
+sobj$seurat_clusters <- sobj$RNA_snn_res.0.3
+
+sobjs_B$LN0179 <- sobj
+
+```
+
+## Run 5
+### LN0178
+```{r}
+
+sobj <- sobjs_B$LN0178
+
+sobj <- FindClusters(sobj, resolution = 0.2)
+DimPlot_custom3(sobj, group.by = "RNA_snn_res.0.2")
+KappaLambda_plot(sobj)
+
+sobj$CT_rnaCluster <-
+  sobj@meta.data %>% 
+  mutate(CT_rnaCluster=ifelse(RNA_snn_res.0.2 %in% c(1), "hB", "B")) %>% 
+  pull(CT_rnaCluster)
+
+DimPlot_custom3(sobj, group.by = "CT_rnaCluster")
+sobj$seurat_clusters <- sobj$RNA_snn_res.0.2
+sobjs_B$LN0178 <- sobj
+
+```
+
+### LN0166
+```{r}
+
+sobj <- sobjs_B$LN0166
+
+sobj <- FindClusters(sobj, resolution = 0.2)
+DimPlot_custom3(sobj, group.by = "RNA_snn_res.0.2")
+KappaLambda_plot(sobj)
+
+sobj$CT_rnaCluster <-
+  sobj@meta.data %>% 
+  mutate(CT_rnaCluster=ifelse(RNA_snn_res.0.2 %in% c(1, 3), "hB", "B")) %>% 
+  pull(CT_rnaCluster)
+
+DimPlot_custom3(sobj, group.by = "CT_rnaCluster")
+sobj$seurat_clusters <- sobj$RNA_snn_res.0.2
+sobjs_B$LN0166 <- sobj
+
+```
+
+## Run 6
+### LN0070
+```{r message=FALSE, warning=FALSE}
+
+sobj <- sobjs_B$LN0070
+
+sobj <- SeuratProc_short(sobj, dims_nn = 1:12, res = 0.1, dims_umap = 1:12)
+DimPlot_custom3(sobj, group.by = "RNA_snn_res.0.1")
+KappaLambda_plot(sobj)
+
+sobj$CT_rnaCluster <-
+  sobj@meta.data %>% 
+  mutate(CT_rnaCluster=ifelse(RNA_snn_res.0.1 %in% c(2), "hB", "B")) %>% 
+  pull(CT_rnaCluster)
+
+DimPlot_custom3(sobj, group.by = "CT_rnaCluster")
+sobj$seurat_clusters <- sobj$RNA_snn_res.0.1
+
+sobjs_B$LN0070 <- sobj
+
+```
+
+### LN0188
+```{r}
+
+sobj <- sobjs_B$LN0188
+
+sobj <- SeuratProc_short(sobj, dims_nn = 1:12, res = 0.2, dims_umap = 1:12)
+DimPlot_custom3(sobj, group.by = "RNA_snn_res.0.2")
+KappaLambda_plot(sobj)
+
+sobj$CT_rnaCluster <-
+  sobj@meta.data %>% 
+  mutate(CT_rnaCluster=ifelse(RNA_snn_res.0.2 %in% c(3), "hB", "B")) %>% 
+  pull(CT_rnaCluster)
+
+DimPlot_custom3(sobj, group.by = "CT_rnaCluster")
+sobj$seurat_clusters <- sobj$RNA_snn_res.0.2
+
+sobjs_B$LN0188 <- sobj
+
+```
+
+### LN0251
+```{r}
+
+sobj <- sobjs_B$LN0251
+
+sobj <- SeuratProc_short(sobj, dims_nn = 1:12, res = 0.2, dims_umap = 1:12)
+DimPlot_custom3(sobj, group.by = "RNA_snn_res.0.2")
+KappaLambda_plot(sobj)
+
+sobj$CT_rnaCluster <-
+  sobj@meta.data %>% 
+  mutate(CT_rnaCluster=ifelse(RNA_snn_res.0.2 %in% c(1), "hB", "B")) %>% 
+  pull(CT_rnaCluster)
+
+DimPlot_custom3(sobj, group.by = "CT_rnaCluster")
+sobj$seurat_clusters <- sobj$RNA_snn_res.0.2
+
+sobjs_B$LN0251 <- sobj
+
+```
+
+### LN0060
+```{r}
+
+sobj <- sobjs_B$LN0060
+print(unique(sobj$Entity))
+
+sobj <- FindClusters(sobj, resolution = 0.2)
+DimPlot_custom3(sobj, group.by = "RNA_snn_res.0.2")
+KappaLambda_plot(sobj)
+
+sobj$CT_rnaCluster <- "hB"
+sobj$seurat_clusters <- sobj$RNA_snn_res.0.2
+sobjs_B$LN0060 <- sobj
+
+```
+
+## Run 7
+### LN0210
+```{r}
+
+sobj <- sobjs_B$LN0210
+
+sobj <- SeuratProc_short(sobj, dims_nn = 1:14, res = 0.2, dims_umap = 1:10)
+DimPlot_custom3(sobj, group.by = "RNA_snn_res.0.2")
+KappaLambda_plot(sobj)
+
+sobj$CT_rnaCluster <-
+  sobj@meta.data %>% 
+  mutate(CT_rnaCluster=ifelse(RNA_snn_res.0.2 %in% c(2), "hB", "B")) %>% 
+  pull(CT_rnaCluster)
+
+DimPlot_custom3(sobj, group.by = "CT_rnaCluster")
+sobj$seurat_clusters <- sobj$RNA_snn_res.0.2
+
+sobjs_B$LN0210 <- sobj
+
+```
+
+### LN0259
+```{r}
+
+sobj <- sobjs_B$LN0259
+print(unique(sobj$Entity))
+
+sobj <- FindClusters(sobj, resolution = 0.2)
+DimPlot_custom3(sobj, group.by = "RNA_snn_res.0.2")
+KappaLambda_plot(sobj)
+
+sobj$CT_rnaCluster <- "hB"
+sobj$seurat_clusters <- sobj$RNA_snn_res.0.2
+sobjs_B$LN0259 <- sobj
+
+```
+
+### LN0176
+```{r}
+
+sobj <- sobjs_B$LN0176
+
+sobj <- SeuratProc_short(sobj, dims_nn = 1:18, res = 0.05, dims_umap = 1:10)
+DimPlot_custom3(sobj, group.by = "RNA_snn_res.0.05")
+KappaLambda_plot(sobj)
+
+sobj$CT_rnaCluster <-
+  sobj@meta.data %>% 
+  mutate(CT_rnaCluster=ifelse(RNA_snn_res.0.05 %in% c(2), "hB", "B")) %>% 
+  pull(CT_rnaCluster)
+
+DimPlot_custom3(sobj, group.by = "CT_rnaCluster")
+sobj$seurat_clusters <- sobj$RNA_snn_res.0.05
+
+sobjs_B$LN0176 <- sobj
+
+```
+
+### LN0228
+```{r}
+
+sobj <- sobjs_B$LN0228
+print(unique(sobj$Entity))
+sobj <- FindClusters(sobj, resolution = 0.2)
+
+DimPlot_custom3(sobj, group.by = "RNA_snn_res.0.2")
+KappaLambda_plot(sobj)
+
+sobj$CT_rnaCluster <- "hB"
+sobj$seurat_clusters <- sobj$RNA_snn_res.0.2
+
+sobjs_B$LN0228 <- sobj
+
+```
+
+## Run 8
+### LN0266
+```{r}
+
+sobj <- sobjs_B$LN0266
+
+sobj <- FindClusters(sobj, resolution = 0.2)
+DimPlot_custom3(sobj, group.by = "RNA_snn_res.0.2")
+KappaLambda_plot(sobj)
+
+sobj$CT_rnaCluster <-
+  sobj@meta.data %>% 
+  mutate(CT_rnaCluster=ifelse(RNA_snn_res.0.2 %in% c(3), "hB", "B")) %>% 
+  pull(CT_rnaCluster)
+
+DimPlot_custom3(sobj, group.by = "CT_rnaCluster")
+sobj$seurat_clusters <- sobj$RNA_snn_res.0.2
+
+sobjs_B$LN0266 <- sobj
+
+```
+
+### LN0271
+```{r}
+
+sobj <- sobjs_B$LN0271
+
+sobj <- FindClusters(sobj, resolution = 0.2)
+DimPlot_custom3(sobj, group.by = "RNA_snn_res.0.2")
+KappaLambda_plot(sobj)
+
+sobj$seurat_clusters <- sobj$RNA_snn_res.0.2
+
+sobjs_B$LN0271 <- sobj
+
+```
+
+### LN0272
+```{r}
+
+sobj <- sobjs_B$LN0272
+
+DimPlot_custom3(sobj, group.by = "RNA_snn_res.0.4")
+KappaLambda_plot(sobj)
+
+sobj$CT_rnaCluster <-
+  sobj@meta.data %>% 
+  mutate(CT_rnaCluster=ifelse(RNA_snn_res.0.4 %in% c(3, 4), "hB", "B")) %>% 
+  pull(CT_rnaCluster)
+
+DimPlot_custom3(sobj, group.by = "CT_rnaCluster")
+sobj$seurat_clusters <- sobj$RNA_snn_res.0.4
+
+sobjs_B$LN0272 <- sobj
+
+```
+
+### LN0265
+```{r}
+
+sobj <- sobjs_B$LN0265
+
+sobj <- FindClusters(sobj, resolution = 0.25)
+DimPlot_custom3(sobj, group.by = "RNA_snn_res.0.25")
+KappaLambda_plot(sobj)
+
+sobj$CT_rnaCluster <-
+  sobj@meta.data %>% 
+  mutate(CT_rnaCluster=ifelse(RNA_snn_res.0.25 %in% c(2), "hB", "B")) %>% 
+  pull(CT_rnaCluster)
+
+DimPlot_custom3(sobj, group.by = "CT_rnaCluster")
+sobj$seurat_clusters <- sobj$RNA_snn_res.0.25
+
+sobjs_B$LN0265 <- sobj
+
+```
+
+## Run 9
+### LN0273
+```{r}
+
+sobj <- sobjs_B$LN0273
+
+sobj <- FindClusters(sobj, resolution = 0.3)
+DimPlot_custom3(sobj, group.by = "RNA_snn_res.0.3")
+KappaLambda_plot(sobj)
+
+sobj$CT_rnaCluster <-
+  sobj@meta.data %>% 
+  mutate(CT_rnaCluster=ifelse(RNA_snn_res.0.3 %in% c(1), "hB", "B")) %>% 
+  pull(CT_rnaCluster)
+
+DimPlot_custom3(sobj, group.by = "CT_rnaCluster")
+sobj$seurat_clusters <- sobj$RNA_snn_res.0.3
+sobjs_B$LN0273 <- sobj
+
+```
+
+### LN0217
+```{r}
+
+sobj <- sobjs_B$LN0217
+
+DimPlot_custom3(sobj, group.by = "RNA_snn_res.0.4")
+KappaLambda_plot(sobj)
+
+sobj$CT_rnaCluster <-
+  sobj@meta.data %>% 
+  mutate(CT_rnaCluster=ifelse(RNA_snn_res.0.4 %in% c(0), "hB", "B")) %>% 
+  pull(CT_rnaCluster)
+
+DimPlot_custom3(sobj, group.by = "CT_rnaCluster")
+sobj$seurat_clusters <- sobj$RNA_snn_res.0.4
+
+sobjs_B$LN0217 <- sobj
+
+```
+
+### LN0078
+```{r}
+
+sobj <- sobjs_B$LN0078
+
+sobj <- FindClusters(sobj, resolution = 0.15)
+DimPlot_custom3(sobj, group.by = "RNA_snn_res.0.15")
+KappaLambda_plot(sobj)
+
+sobj$CT_rnaCluster <-
+  sobj@meta.data %>% 
+  mutate(CT_rnaCluster=ifelse(RNA_snn_res.0.15 %in% c(1), "hB", "B")) %>% 
+  pull(CT_rnaCluster)
+
+DimPlot_custom3(sobj, group.by = "CT_rnaCluster")
+sobj$seurat_clusters <- sobj$RNA_snn_res.0.15
+
+sobjs_B$LN0078 <- sobj
+
+```
+
+### LN0274
+```{r}
+
+sobj <- sobjs_B$LN0274
+print(unique(sobj$Entity))
+
+sobj <- FindClusters(sobj, resolution = 0.3)
+DimPlot_custom3(sobj, group.by = "RNA_snn_res.0.3")
+KappaLambda_plot(sobj)
+
+sobj$CT_rnaCluster <- "hB"
+sobj$seurat_clusters <- sobj$RNA_snn_res.0.3
+
+sobjs_B$LN0274 <- sobj
+
+```
+
+## Run 10
+### LN0087
+```{r}
+
+sobj <- sobjs_B$LN0087
+
+sobj <- FindClusters(sobj, resolution = 0.3)
+DimPlot_custom3(sobj, group.by = "RNA_snn_res.0.3")
+KappaLambda_plot(sobj)
+
+sobj$seurat_clusters <- sobj$RNA_snn_res.0.3
+
+sobjs_B$LN0087 <- sobj
+
+```
+
+### LN0267
+```{r}
+
+sobj <- sobjs_B$LN0267
+
+sobj <- SeuratProc_short(sobj, dims_nn = 1:20, res = 0.3, dims_umap = 1:20)
+DimPlot_custom3(sobj, group.by = "RNA_snn_res.0.3")
+KappaLambda_plot(sobj)
+
+sobj$CT_rnaCluster <-
+  sobj@meta.data %>% 
+  mutate(CT_rnaCluster=ifelse(RNA_snn_res.0.3 %in% c(3), "hB", "B")) %>% 
+  pull(CT_rnaCluster)
+
+DimPlot_custom3(sobj, group.by = "CT_rnaCluster")
+sobj$seurat_clusters <- sobj$RNA_snn_res.0.3
+
+sobjs_B$LN0267 <- sobj
+
+```
+
+### LN0053
+```{r}
+
+sobj <- sobjs_B$LN0053
+print(unique(sobj$Entity))
+
+DimPlot_custom3(sobj, group.by = "RNA_snn_res.0.4")
+KappaLambda_plot(sobj)
+
+sobj@meta.data$CT_rnaCluster <- "hB"
+sobj$seurat_clusters <- sobj$RNA_snn_res.0.4
+
+sobjs_B$LN0053 <- sobj
+
+```
+
+### LN0014
+```{r}
+
+sobj <- sobjs_B$LN0014
+sobj <- FindClusters(sobj, resolution = 0.1)
+DimPlot_custom3(sobj, group.by = "RNA_snn_res.0.1")
+
+KappaLambda_plot(sobj)
+
+sobj$CT_rnaCluster <-
+  sobj@meta.data %>% 
+  mutate(CT_rnaCluster=ifelse(RNA_snn_res.0.1 %in% c(2), "hB", "B")) %>% 
+  pull(CT_rnaCluster)
+
+DimPlot_custom3(sobj, group.by = "CT_rnaCluster")
+sobj$seurat_clusters <- sobj$RNA_snn_res.0.1
+
+sobjs_B$LN0014 <- sobj
+
+```
+
+## Run 11
+### LN0198
+```{r}
+
+sobj <- sobjs_B$LN0198
+
+sobj <- FindClusters(sobj, resolution = 0.3)
+DimPlot_custom3(sobj, group.by = "RNA_snn_res.0.3")
+KappaLambda_plot(sobj)
+
+sobj$CT_rnaCluster <-
+  sobj@meta.data %>% 
+  mutate(CT_rnaCluster=ifelse(RNA_snn_res.0.3 %in% c(3), "hB", "B")) %>% 
+  pull(CT_rnaCluster)
+
+DimPlot_custom3(sobj, group.by = "CT_rnaCluster")
+sobj$seurat_clusters <- sobj$RNA_snn_res.0.3
+
+sobjs_B$LN0198 <- sobj
+
+```
+
+### LN0186
+```{r}
+
+sobj <- sobjs_B$LN0186
+
+sobj <- FindClusters(sobj, resolution = 0.2)
+DimPlot_custom3(sobj, group.by = "RNA_snn_res.0.2")
+KappaLambda_plot(sobj)
+
+sobj$seurat_clusters <- sobj$RNA_snn_res.0.4
+
+sobjs_B$LN0186 <- sobj
+
+```
+
+### LN0043
+```{r}
+
+sobj <- sobjs_B$LN0043
+
+DimPlot_custom3(sobj, group.by = "RNA_snn_res.0.4")
+KappaLambda_plot(sobj)
+
+sobj$CT_rnaCluster <-
+  sobj@meta.data %>% 
+  mutate(CT_rnaCluster=ifelse(RNA_snn_res.0.4 %in% c(0, 2), "hB", "B")) %>% 
+  pull(CT_rnaCluster)
+
+DimPlot_custom3(sobj, group.by = "CT_rnaCluster")
+sobj$seurat_clusters <- sobj$RNA_snn_res.0.4
+
+sobjs_B$LN0043 <- sobj
+
+```
+
+### LN0080
+```{r}
+
+sobj <- sobjs_B$LN0080
+print(unique(sobj$Entity))
+
+DimPlot_custom3(sobj, group.by = "RNA_snn_res.0.4")
+KappaLambda_plot(sobj)
+
+sobj@meta.data$CT_rnaCluster <- "hB"
+sobj$seurat_clusters <- sobj$RNA_snn_res.0.4
+
+sobjs_B$LN0080 <- sobj
+
+```
+
+## Run 12
+### LN0030
+```{r}
+
+sobj <- sobjs_B$LN0030
+
+sobj <- FindClusters(sobj, resolution = 0.2)
+DimPlot_custom3(sobj, group.by = "RNA_snn_res.0.2")
+KappaLambda_plot(sobj)
+
+sobj$CT_rnaCluster <-
+  sobj@meta.data %>% 
+  mutate(CT_rnaCluster=ifelse(RNA_snn_res.0.2 %in% c(0), "hB", "B")) %>% 
+  pull(CT_rnaCluster)
+
+DimPlot_custom3(sobj, group.by = "CT_rnaCluster")
+sobj$seurat_clusters <- sobj$RNA_snn_res.0.2
+
+sobjs_B$LN0030 <- sobj
+
+```
+
+### LN0196
+```{r}
+
+sobj <- sobjs_B$LN0196
+
+sobj <- FindClusters(sobj, resolution = 0.2)
+DimPlot_custom3(sobj, group.by = "RNA_snn_res.0.2")
+KappaLambda_plot(sobj)
+
+sobj$CT_rnaCluster <-
+  sobj@meta.data %>% 
+  mutate(CT_rnaCluster=ifelse(RNA_snn_res.0.2 %in% c(3), "hB", "B")) %>% 
+  pull(CT_rnaCluster)
+
+DimPlot_custom3(sobj, group.by = "CT_rnaCluster")
+sobj$seurat_clusters <- sobj$RNA_snn_res.0.2
+
+sobjs_B$LN0196 <- sobj
+
+```
+
+### LN0278
+```{r}
+
+sobj <- sobjs_B$LN0278
+
+sobj <- FindClusters(sobj, resolution = 0.15)
+DimPlot_custom3(sobj, group.by = "RNA_snn_res.0.15")
+KappaLambda_plot(sobj)
+
+sobj$CT_rnaCluster <-
+  sobj@meta.data %>% 
+  mutate(CT_rnaCluster=ifelse(RNA_snn_res.0.15 %in% c(4), "hB", "B")) %>% 
+  pull(CT_rnaCluster)
+
+DimPlot_custom3(sobj, group.by = "CT_rnaCluster")
+sobj$seurat_clusters <- sobj$RNA_snn_res.0.15
+
+sobjs_B$LN0278 <- sobj
+
+
+```
+
+## Run 13
+### LN0281
+```{r}
+
+sobj <- sobjs_B$LN0281
+
+sobj <- FindClusters(sobj, resolution = 0.2)
+DimPlot_custom3(sobj, group.by = "RNA_snn_res.0.2")
+KappaLambda_plot(sobj)
+
+sobj$seurat_clusters <- sobj$RNA_snn_res.0.2
+
+sobjs_B$LN0281 <- sobj
+
+```
+
+## Run 14
+### LN0046
+```{r}
+
+sobj <- sobjs_B$LN0046
+
+sobj <- FindClusters(sobj, resolution = 0.2)
+DimPlot_custom3(sobj, group.by = "RNA_snn_res.0.2")
+KappaLambda_plot(sobj)
+
+sobj$CT_rnaCluster <-
+  sobj@meta.data %>% 
+  mutate(CT_rnaCluster=ifelse(RNA_snn_res.0.2 %in% c(3), "hB", "B")) %>% 
+  pull(CT_rnaCluster)
+
+DimPlot_custom3(sobj, group.by = "CT_rnaCluster")
+sobj$seurat_clusters <- sobj$RNA_snn_res.0.2
+
+sobjs_B$LN0046 <- sobj
+
+```
+
+### LN0132
+```{r}
+
+sobj <- sobjs_B$LN0132
+
+sobj <- FindClusters(sobj, resolution = 0.2)
+DimPlot_custom3(sobj, group.by = "RNA_snn_res.0.2")
+KappaLambda_plot(sobj)
+
+sobj@meta.data$CT_rnaCluster <- "hB"
+sobj$seurat_clusters <- sobj$RNA_snn_res.0.2
+
+sobjs_B$LN0132 <- sobj
+
+```
+
+### LN0285
+```{r}
+
+sobj <- sobjs_B$LN0285
+
+sobj <- FindClusters(sobj, resolution = 0.2)
+DimPlot_custom3(sobj, group.by = "RNA_snn_res.0.2")
+KappaLambda_plot(sobj)
+
+sobj$CT_rnaCluster <-
+  sobj@meta.data %>% 
+  mutate(CT_rnaCluster=ifelse(RNA_snn_res.0.2 %in% c(2, 3), "hB", "B")) %>% 
+  pull(CT_rnaCluster)
+
+DimPlot_custom3(sobj, group.by = "CT_rnaCluster")
+sobj$seurat_clusters <- sobj$RNA_snn_res.0.2
+
+sobjs_B$LN0285 <- sobj
+
+```
+
+### LN0310
+```{r}
+
+sobj <- sobjs_B$LN0310
+
+sobj <- FindClusters(sobj, resolution = 0.2)
+DimPlot_custom3(sobj, group.by = "RNA_snn_res.0.2")
+KappaLambda_plot(sobj)
+
+sobj$seurat_clusters <- sobj$RNA_snn_res.0.2
+
+sobjs_B$LN0310 <- sobj
+
+
+```
+
+## Run 15
+### LN0094
+```{r}
+
+sobj <- sobjs_B$LN0094
+
+sobj <- FindClusters(sobj, resolution = 0.2)
+DimPlot_custom3(sobj, group.by = "RNA_snn_res.0.2")
+KappaLambda_plot(sobj)
+
+sobj$seurat_clusters <- sobj$RNA_snn_res.0.2
+
+sobjs_B$LN0094 <- sobj
+
+```
+
+### LN0118
+```{r}
+
+sobj <- sobjs_B$LN0118
+
+sobj <- FindClusters(sobj, resolution = 0.2)
+DimPlot_custom3(sobj, group.by = "RNA_snn_res.0.2")
+KappaLambda_plot(sobj)
+
+sobj$seurat_clusters <- sobj$RNA_snn_res.0.2
+
+sobjs_B$LN0118 <- sobj
+
+```
+
+### LN0262
+```{r}
+
+sobj <- sobjs_B$LN0262
+
+sobj <- FindClusters(sobj, resolution = 0.2)
+DimPlot_custom3(sobj, group.by = "RNA_snn_res.0.2")
+KappaLambda_plot(sobj)
+
+sobj$seurat_clusters <- sobj$RNA_snn_res.0.2
+
+sobjs_B$LN0262 <- sobj
+
+```
+
+### LN0295
+```{r}
+
+sobj <- sobjs_B$LN0295
+
+sobj <- FindClusters(sobj, resolution = 0.15)
+DimPlot_custom3(sobj, group.by = "RNA_snn_res.0.15")
+KappaLambda_plot(sobj)
+
+sobj$seurat_clusters <- sobj$RNA_snn_res.0.15
+
+sobjs_B$LN0295 <- sobj
+
+```
+
+# Set Ident slot
+```{r}
+
+sobjs_B <- lapply(sobjs_B, function(x){
+  
+  Idents(x) <- x$seurat_clusters
+  return(x)
+  
+})
+
+```
+
+# Save objects
+```{r eval=T}
+
+saveRDS(sobjs_B, "output/List_SeuratObjects_B.rds")
+
+```

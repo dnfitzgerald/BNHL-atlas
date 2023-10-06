@@ -1,0 +1,656 @@
+---
+title: "Subset objects to celltype B"
+author: Tobias Roider
+date: "Last compiled on `r format(Sys.time(), '%d %B, %Y')`"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r options, include=FALSE, warning = FALSE}
+library(knitr)
+opts_chunk$set(echo=TRUE, tidy=FALSE, include=TRUE, message=FALSE,
+               dpi = 100, cache = FALSE, warning = FALSE)
+options(bitmapType = "cairo")
+
+```
+
+# Load packages and functions
+```{r Load packages and functions}
+library(Seurat)
+library(tidyverse)
+library(readxl)
+library(plotly)
+source("code/QCplots.R")
+source("code/SeuratProc.R")
+
+```
+
+# Locate files
+```{r}
+
+filenames.full <- list.files(path = "output/SeuratObjects_Proc", pattern = "LN", full.names = T)
+names(filenames.full) <- gsub(x=filenames.full, pattern = '^.*_\\s*|\\s*\\..*$', 
+                              replacement = "")
+
+```
+
+# Subset data
+```{r }
+
+sobjs_B <- lapply(filenames.full, function(x) {
+  y <- subset(readRDS(x), subset=CT_rnaCluster=="B")
+  return(y)
+}) 
+
+```
+
+# Seurat processing
+```{r}
+
+dims.clustering=1:14
+resolution.clustering=0.4
+dims.umap=1:14
+
+for (i in 1:length(sobjs_B)) {
+  sobjs_B[[i]] <- SeuratProc_T(sobjs_B[[i]])
+}
+
+```
+
+# Refine objects
+## Run 1
+### LN0050
+```{r}
+
+FeatureScatter_custom4(sobjs_B$LN0050)+
+  geom_vline(xintercept = 1.2, linetype="dashed")
+  
+sobjs_B$LN0050 <- subset(sobjs_B$LN0050, subset = adt_.CD3<1.2)
+
+```
+
+### LN0097
+```{r}
+
+FeatureScatter_custom4(sobjs_B$LN0097)+
+  geom_vline(xintercept = 1.4, linetype="dashed")
+
+sobjs_B$LN0097 <- subset(sobjs_B$LN0097,  idents = 0:5, subset = adt_.CD3<1.4)
+
+```
+
+## Run 2
+### LN0100
+```{r}
+
+FeatureScatter_custom4(sobjs_B$LN0100)+
+  geom_vline(xintercept = 1.0, linetype="dashed")
+
+sobjs_B$LN0100 <- subset(sobjs_B$LN0100, idents = c(0:4), 
+                         subset = adt_.CD3<1.0) 
+
+```
+
+### LN0107
+```{r}
+
+FeatureScatter_custom4(sobjs_B$LN0107)+
+  geom_vline(xintercept = 1.4, linetype="dashed")
+
+sobjs_B$LN0107 <- subset(sobjs_B$LN0107, idents = c(0:5), 
+                         subset = adt_.CD3<1.4) 
+
+```
+
+## Run 3
+### LN0110
+```{r}
+
+FeatureScatter_custom4(sobjs_B$LN0110)+
+  geom_vline(xintercept = 1.4, linetype="dashed")+
+  geom_hline(yintercept = 0.4, linetype="dashed")
+  
+sobjs_B$LN0110 <- subset(sobjs_B$LN0110, idents = c(0:5, 7:8), 
+                         subset = adt_.CD3<1.4 & adt_.CD19>0.4) 
+
+```
+### LN0152
+```{r}
+
+FeatureScatter_custom4(sobjs_B$LN0152)+
+  geom_vline(xintercept = 1.4, linetype="dashed")
+
+sobjs_B$LN0152 <- subset(sobjs_B$LN0152, idents = c(0:4, 6), 
+                         subset = adt_.CD3<1.4) 
+
+```
+
+### LN0002
+```{r}
+
+FeatureScatter_custom4(sobjs_B$LN0002)+
+  geom_vline(xintercept = 1.8, linetype="dashed")
+
+sobjs_B$LN0002 <- subset(sobjs_B$LN0002, subset = adt_.CD3<1.8) 
+
+```
+
+### LN0144
+```{r}
+
+FeatureScatter_custom4(sobjs_B$LN0144)+
+  geom_vline(xintercept = 1, linetype="dashed")
+
+sobjs_B$LN0144 <- subset(sobjs_B$LN0144, subset = adt_.CD3<1) 
+
+```
+
+## Run 4
+### LN0211
+```{r}
+
+FeatureScatter_custom4(sobjs_B$LN0211)+
+  geom_vline(xintercept = 0.8, linetype="dashed")
+
+sobjs_B$LN0211 <- subset(sobjs_B$LN0211, idents = c(0:3,5:7),  
+                         subset = adt_.CD3<0.8) 
+
+```
+
+### LN0135
+```{r}
+
+FeatureScatter_custom4(sobjs_B$LN0135)+
+  geom_vline(xintercept = 1.6, linetype="dashed")
+   
+sobjs_B$LN0135 <- subset(sobjs_B$LN0135, subset = adt_.CD3<1.6) 
+
+```
+
+### LN0193
+```{r}
+
+FeatureScatter_custom4(sobjs_B$LN0193)+
+  geom_vline(xintercept = 0.6, linetype="dashed")
+
+sobjs_B$LN0193 <- subset(sobjs_B$LN0193, subset = adt_.CD3<0.6)
+
+```
+
+### LN0179
+```{r}
+
+FeatureScatter_custom4(sobjs_B$LN0179)+
+  geom_vline(xintercept = 1.2, linetype="dashed")
+
+sobjs_B$LN0179 <- subset(sobjs_B$LN0179, subset = adt_.CD3<1.2)
+
+```
+
+## Run 5
+### LN0178
+```{r}
+
+FeatureScatter_custom4(sobjs_B$LN0178)+
+  geom_vline(xintercept = 0.5, linetype="dashed")
+
+sobjs_B$LN0178 <- subset(sobjs_B$LN0178, idents = c(0:3), 
+                         subset = adt_.CD3<0.5) 
+
+```
+
+### LN0166
+```{r}
+
+FeatureScatter_custom4(sobjs_B$LN0166)+
+  geom_vline(xintercept = 0.6, linetype="dashed")
+
+sobjs_B$LN0166 <- subset(sobjs_B$LN0166, subset = adt_.CD3<0.6)
+
+```
+
+## Run 6
+### LN0070
+```{r}
+
+FeatureScatter_custom4(sobjs_B$LN0070)+
+  geom_vline(xintercept = 1.3, linetype="dashed")
+
+sobjs_B$LN0070 <- subset(sobjs_B$LN0070, idents = c(0:3, 5:6), 
+                         subset = adt_.CD3<1.3) 
+
+```
+
+### LN0188
+```{r}
+
+FeatureScatter_custom4(sobjs_B$LN0188)+
+  geom_vline(xintercept = 0.8, linetype="dashed")
+
+sobjs_B$LN0188 <- subset(sobjs_B$LN0188, idents = c(0:4), 
+                         subset = adt_.CD3<0.8) 
+
+```
+
+### LN0251
+```{r}
+
+FeatureScatter_custom4(sobjs_B$LN0251)+
+  geom_vline(xintercept = 0.8, linetype="dashed")
+
+sobjs_B$LN0251 <- subset(sobjs_B$LN0251, idents = c(0:3, 5), 
+                         subset = adt_.CD3<0.8) 
+
+```
+
+### LN0060
+```{r}
+
+FeatureScatter_custom4(sobjs_B$LN0060)+
+  geom_vline(xintercept = 0.6, linetype="dashed")
+
+sobjs_B$LN0060 <- subset(sobjs_B$LN0060, idents = c(0:2, 4:5), 
+                         subset = adt_.CD3<0.6) 
+
+```
+
+## Run 7
+### LN0210
+```{r}
+
+FeatureScatter_custom4(sobjs_B$LN0210)+
+  geom_vline(xintercept = 1.5, linetype="dashed")
+
+sobjs_B$LN0210 <- subset(sobjs_B$LN0210, subset = adt_.CD3<1.5)
+
+```
+
+### LN0259
+```{r}
+
+FeatureScatter_custom4(sobjs_B$LN0259)+
+  geom_vline(xintercept = 1.3, linetype="dashed")
+
+sobjs_B$LN0259 <- subset(sobjs_B$LN0259, idents = c(0:2, 4:6), 
+                         subset = adt_.CD3<1.3) 
+
+```
+
+### LN0176
+```{r}
+
+FeatureScatter_custom4(sobjs_B$LN0176)+
+  geom_vline(xintercept = 1.3, linetype="dashed")
+  
+sobjs_B$LN0176 <- subset(sobjs_B$LN0176, idents = c(0:3, 5), 
+                         subset = adt_.CD3<1.3)
+
+```
+
+### LN0228
+```{r}
+
+FeatureScatter_custom4(sobjs_B$LN0228)+
+  geom_vline(xintercept = 0.6, linetype="dashed")
+
+sobjs_B$LN0228 <- subset(sobjs_B$LN0228, idents = c(0:2, 4), 
+                         subset = adt_.CD3<0.6) 
+
+```
+
+## Run 8
+### LN0266
+```{r}
+
+FeatureScatter_custom4(sobjs_B$LN0266)+
+  geom_vline(xintercept = 0.5, linetype="dashed")
+
+sobjs_B$LN0266 <- subset(sobjs_B$LN0266, subset = adt_.CD3<0.5) 
+
+```
+
+### LN0271
+```{r}
+
+FeatureScatter_custom4(sobjs_B$LN0271)+
+  geom_vline(xintercept = 1.3, linetype="dashed")
+
+sobjs_B$LN0271 <- subset(sobjs_B$LN0271, idents = c(0:3), 
+                         subset = adt_.CD3<1.3) 
+
+```
+
+### LN0272
+```{r}
+
+FeatureScatter_custom4(sobjs_B$LN0272)+
+  geom_vline(xintercept = 0.8, linetype="dashed")
+
+sobjs_B$LN0272 <- subset(sobjs_B$LN0272, subset = adt_.CD3<0.8) 
+
+```
+
+### LN0265
+```{r}
+
+FeatureScatter_custom4(sobjs_B$LN0265)+
+  geom_vline(xintercept = 0.6, linetype="dashed")
+
+sobjs_B$LN0265 <- subset(sobjs_B$LN0265, idents = c(0:3), 
+                         subset = adt_.CD3<0.6) 
+
+```
+
+## Run 9
+### LN0273
+```{r}
+
+FeatureScatter_custom4(sobjs_B$LN0273)+
+  geom_vline(xintercept = 1, linetype="dashed")
+
+sobjs_B$LN0273 <- subset(sobjs_B$LN0273, subset = adt_.CD3<1) 
+
+```
+
+### LN0217
+```{r}
+
+FeatureScatter_custom4(sobjs_B$LN0217)+
+  geom_vline(xintercept = 1, linetype="dashed")
+
+sobjs_B$LN0217 <- subset(sobjs_B$LN0217, idents = c(0:2), subset = adt_.CD3<1)
+
+```
+
+### LN0078
+```{r}
+
+FeatureScatter_custom4(sobjs_B$LN0078)+
+  geom_vline(xintercept = 1, linetype="dashed")
+
+sobjs_B$LN0078 <- subset(sobjs_B$LN0078,  subset = adt_.CD3<1)
+
+```
+
+### LN0274
+```{r}
+
+FeatureScatter_custom4(sobjs_B$LN0274)+
+  geom_vline(xintercept = 0.75, linetype="dashed")
+
+sobjs_B$LN0274 <- subset(sobjs_B$LN0274,  subset = adt_.CD3<0.75)
+
+```
+
+## Run 10
+### LN0087
+```{r}
+
+FeatureScatter_custom4(sobjs_B$LN0087)+
+  geom_vline(xintercept = 1.4, linetype="dashed")
+
+sobjs_B$LN0087 <- subset(sobjs_B$LN0087, subset = adt_.CD3<1.4)
+
+```
+
+### LN0267
+```{r}
+
+FeatureScatter_custom4(sobjs_B$LN0267)+
+  geom_vline(xintercept = 1, linetype="dashed")
+
+sobjs_B$LN0267 <- subset(sobjs_B$LN0267, subset = adt_.CD3<1)
+
+```
+
+### LN0053
+```{r}
+
+FeatureScatter_custom4(sobjs_B$LN0053)+
+  geom_vline(xintercept = 0.8, linetype="dashed")
+
+sobjs_B$LN0053 <- subset(sobjs_B$LN0053, subset = adt_.CD3<0.8)
+
+```
+
+### LN0014
+```{r}
+
+FeatureScatter_custom4(sobjs_B$LN0014)+
+  geom_vline(xintercept = 1.5, linetype="dashed")
+
+sobjs_B$LN0014 <- subset(sobjs_B$LN0014, subset = adt_.CD3<1.4)
+
+```
+
+## Run 11
+### LN0198
+```{r}
+
+FeatureScatter_custom4(sobjs_B$LN0198)+
+  geom_vline(xintercept = 1, linetype="dashed")
+
+sobjs_B$LN0198 <- subset(sobjs_B$LN0198, subset =  adt_.CD3<1)
+
+```
+
+### LN0186
+```{r}
+
+FeatureScatter_custom4(sobjs_B$LN0186)+
+  geom_vline(xintercept = 1.4, linetype="dashed")
+
+sobjs_B$LN0186 <- subset(sobjs_B$LN0186, subset = adt_.CD3<1.4)
+
+```
+
+### LN0043
+```{r}
+
+FeatureScatter_custom4(sobjs_B$LN0043)+
+  geom_vline(xintercept = 0.75, linetype="dashed")
+
+sobjs_B$LN0043 <- subset(sobjs_B$LN0043, subset = adt_.CD3<0.75)
+
+```
+
+### LN0080
+```{r}
+
+FeatureScatter_custom4(sobjs_B$LN0080)+
+  geom_vline(xintercept = 1, linetype="dashed")
+
+sobjs_B$LN0080 <- subset(sobjs_B$LN0080, idents = c(0:6), subset = adt_.CD3<1)
+
+```
+
+## Run 12
+### LN0030
+```{r}
+
+FeatureScatter_custom4(sobjs_B$LN0030)+
+  geom_vline(xintercept = 0.8, linetype="dashed")
+
+sobjs_B$LN0030 <- subset(sobjs_B$LN0030, subset =  adt_.CD3<0.8)
+
+```
+
+### LN0196
+```{r}
+
+FeatureScatter_custom4(sobjs_B$LN0196)+
+  geom_vline(xintercept = 0.8, linetype="dashed")
+
+sobjs_B$LN0196 <- subset(sobjs_B$LN0196, subset = adt_.CD3<0.8)
+
+```
+
+### LN0278
+```{r}
+
+FeatureScatter_custom4(sobjs_B$LN0278)+
+  geom_vline(xintercept = 0.8, linetype="dashed")
+
+sobjs_B$LN0278 <- subset(sobjs_B$LN0278, subset = adt_.CD3<0.8)
+
+```
+
+## Run 13
+### LN0281
+```{r}
+FeatureScatter_custom4(sobjs_B$LN0281)+
+  geom_vline(xintercept = 0.8, linetype="dashed")
+
+sobjs_B$LN0281 <- subset(sobjs_B$LN0281, subset =  adt_.CD3<0.8)
+
+```
+
+## Run 14
+### LN0046
+```{r}
+
+FeatureScatter_custom4(sobjs_B$LN0046)+
+  geom_vline(xintercept = 1.2, linetype="dashed")
+
+sobjs_B$LN0046 <- subset(sobjs_B$LN0046, subset =  adt_.CD3<1.2)
+
+```
+
+### LN0132
+```{r}
+FeatureScatter_custom4(sobjs_B$LN0132)+
+  geom_vline(xintercept = 0.5, linetype="dashed")
+
+sobjs_B$LN0132 <- subset(sobjs_B$LN0132, subset =  adt_.CD3<0.5)
+
+```
+
+### LN0285
+```{r}
+
+FeatureScatter_custom4(sobjs_B$LN0285)+
+  geom_vline(xintercept = 1, linetype="dashed")
+
+sobjs_B$LN0285 <- subset(sobjs_B$LN0285, subset =  adt_.CD3<1)
+
+```
+
+### LN0310
+```{r}
+
+FeatureScatter_custom4(sobjs_B$LN0310)+
+  geom_vline(xintercept = 1.2, linetype="dashed")
+
+sobjs_B$LN0310 <- subset(sobjs_B$LN0310, subset =  adt_.CD3<1.2)
+
+```
+
+## Run 15
+### LN0094
+```{r}
+FeatureScatter_custom4(sobjs_B$LN0094)+
+  geom_vline(xintercept = 1.2, linetype="dashed")
+
+sobjs_B$LN0094 <- subset(sobjs_B$LN0094, subset =  adt_.CD3<1.2)
+
+```
+
+### LN0118
+```{r}
+
+FeatureScatter_custom4(sobjs_B$LN0118)+
+  geom_vline(xintercept = 1.3, linetype="dashed")
+
+sobjs_B$LN0118 <- subset(sobjs_B$LN0118, subset =  adt_.CD3<1.3)
+
+```
+
+### LN0262
+```{r}
+
+FeatureScatter_custom4(sobjs_B$LN0262)+
+  geom_vline(xintercept = 0.5, linetype="dashed")
+
+sobjs_B$LN0262 <- subset(sobjs_B$LN0262, subset =  adt_.CD3<0.5)
+
+```
+
+### LN0295
+```{r}
+
+FeatureScatter_custom4(sobjs_B$LN0295)+
+  geom_vline(xintercept = 1.2, linetype="dashed")
+
+sobjs_B$LN0295 <- subset(sobjs_B$LN0295, subset =  adt_.CD3<1.2)
+
+```
+
+## Run 16
+### LN0025
+```{r}
+
+FeatureScatter_custom4(sobjs_B$LN0025)+
+  geom_vline(xintercept = 1.2, linetype="dashed")
+
+sobjs_B$LN0025 <- subset(sobjs_B$LN0025, subset =  adt_.CD3<1.2)
+
+```
+
+### LN0229
+```{r}
+
+FeatureScatter_custom4(sobjs_B$LN0229)+
+  geom_vline(xintercept = 1.2, linetype="dashed")
+
+sobjs_B$LN0229 <- subset(sobjs_B$LN0229, subset =  adt_.CD3<1.2)
+
+```
+
+### LN0280
+```{r}
+
+FeatureScatter_custom4(sobjs_B$LN0280)+
+  geom_vline(xintercept = 1.2, linetype="dashed")
+
+sobjs_B$LN0280 <- subset(sobjs_B$LN0280, subset =  adt_.CD3<1.2)
+
+```
+
+### LN0302
+```{r}
+
+FeatureScatter_custom4(sobjs_B$LN0302)+
+  geom_vline(xintercept = 0.7, linetype="dashed")
+
+sobjs_B$LN0302 <- subset(sobjs_B$LN0302, subset =  adt_.CD3<1.2)
+
+```
+
+# Re-run Seurat Processing RNA
+```{r}
+
+for (i in 1:length(sobjs_B)) {
+  sobjs_B[[i]] <- 
+    SeuratProc_T(sobjs_B[[i]])
+}
+
+```
+
+# Run Seurat Processing ADT
+```{r}
+
+for (i in 1:length(sobjs_B)) {
+  sobjs_B[[i]] <- 
+    SeuratProcADT_T(sobjs_B[[i]])
+}
+
+```
+
+# Save Object
+```{r}
+
+saveRDS(sobjs_B, file = "output/List_SeuratObjects_B.rds")
+
+```
+

@@ -1,0 +1,363 @@
+---
+title: "Seurat Processing - Run 16"
+author: Tobias Roider
+date: "Last compiled on `r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: united
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r options, include=FALSE, warning = FALSE}
+library(knitr)
+opts_chunk$set(echo=TRUE, include=TRUE, message=TRUE,
+               dpi = 100, cache = FALSE, warning = FALSE)
+options(bitmapType = "cairo")
+```
+
+# Load packages and data
+```{r message=FALSE}
+
+library("readxl")
+library("tidyverse")
+library("Seurat")
+source("code/SeuratProc.R")
+source("code/QCplots.R")
+load("output/sampleList.RData")
+
+select <- dplyr::select
+filter <- dplyr::filter
+mutate <- dplyr::mutate
+summarise <- dplyr::summarise
+
+run_current <- "Run 16"
+
+```
+
+# Read samples of this run
+```{r}
+
+samples <- sampleList %>% filter(Run==run_current) %>% 
+  pull(PatientID) %>% sort()
+
+samples
+
+sobjs <- 
+  lapply(samples, function(x){
+  z <- list.files(path = "output/SeuratObjects_Raw", pattern = x, full.names = T)
+  y <- readRDS(z)
+  return(y)
+})
+
+```
+
+# Process samples
+## First sample
+### Pre-Processing
+```{r message=T}
+
+samples[1]
+sobj_tmp <- sobjs[[1]]
+
+# Set processing parameters
+nFeature_RNA_low=1050
+percent.mt_top=12
+nFeature_RNA_top=6000 
+dims.clustering=1:14
+resolution.clustering = 0.4
+dims.umap=1:14
+
+# Basic QC plots (pre-processing)
+VlnPlot_custom(sobj_tmp)
+FeatureScatter_custom1(sobj_tmp)
+FeatureScatter_custom2(sobj_tmp)  
+
+# Run Seurat Processing
+sobj_tmp <- SeuratProc1(sobj_tmp)
+
+```
+
+### Post-processing
+```{r}
+
+# Basic QC plots (post-processing)
+VlnPlot_custom(sobj_tmp)
+FeatureScatter_custom1(sobj_tmp)
+FeatureScatter_custom2(sobj_tmp)  
+
+# UMAP Plot
+DimPlot_custom1(sobj_tmp)
+
+# Check clustering by features or mito genes
+FeaturePlot_custom1(sobj_tmp)
+
+# Check doublets of B and T cells
+FeaturePlot_custom2(sobj_tmp)
+
+```
+
+### Assign cell types by RNA cluster
+```{r}
+
+B <- c("0", "1", "2", "5")
+Tc <- c("4", "3")
+O <-  c()
+
+sobj_tmp$CT_rnaCluster <- 
+  left_join(
+    data.frame(sobj_tmp@meta.data),
+    tibble(seurat_clusters=c(B, Tc, O) %>% as.factor(), 
+           CT_rnaCluster=c(rep("B", length(B)), 
+                           rep("T", length(Tc)), 
+                           rep("Other", length(O))) %>% as.factor()
+          )
+    )%>% pull(CT_rnaCluster)
+
+DimPlot_custom2(sobj_tmp)
+
+sobjs[[1]] <- sobj_tmp
+
+```
+
+## Second sample
+### Pre-Processing
+```{r}
+samples[2]
+sobj_tmp <- sobjs[[2]]
+
+# Set processing parameters
+nFeature_RNA_low=1000
+percent.mt_top=14
+nFeature_RNA_top=6000 
+dims.clustering=1:14
+resolution.clustering = 0.4
+dims.umap=1:14
+
+# Basic QC plots (pre-processing)
+VlnPlot_custom(sobj_tmp)
+FeatureScatter_custom1(sobj_tmp)
+FeatureScatter_custom2(sobj_tmp)  
+
+# Run Seurat Processing
+sobj_tmp <- SeuratProc1(sobj_tmp)
+
+```
+
+### Post-Processing
+```{r}
+
+# Basic QC plots (post-processing)
+VlnPlot_custom(sobj_tmp)
+FeatureScatter_custom1(sobj_tmp)
+FeatureScatter_custom2(sobj_tmp)  
+
+# Remove cluster 7 (low counts)
+sobj_tmp <- subset(sobj_tmp, idents = c(0:6, 8, 9))
+
+# Run Seurat Processing
+sobj_tmp <- SeuratProc1(sobj_tmp)
+
+# UMAP Plot
+DimPlot_custom1(sobj_tmp)
+
+# Check clustering by features or mito genes
+FeaturePlot_custom1(sobj_tmp)
+
+# Check doublets of B and T cells
+FeaturePlot_custom2(sobj_tmp)
+
+```
+
+### Assign cell types by RNA cluster
+```{r}
+
+B <-  c("0", "1", "3", "4", "8")
+Tc <- c("2", "5", "7")
+O <-  c("6")
+
+sobj_tmp$CT_rnaCluster <- 
+  left_join(
+    data.frame(sobj_tmp@meta.data),
+    tibble(seurat_clusters=c(B, Tc, O) %>% as.factor(), 
+           CT_rnaCluster=c(rep("B", length(B)), 
+                           rep("T", length(Tc)), 
+                           rep("Other", length(O))) %>% as.factor()
+          )
+    )%>% pull(CT_rnaCluster)
+
+DimPlot_custom2(sobj_tmp)
+
+sobjs[[2]] <- sobj_tmp
+
+```
+
+## Third sample
+### Pre-Processing
+```{r}
+samples[3]
+sobj_tmp <- sobjs[[3]]
+
+# Set processing parameters
+nFeature_RNA_low=1000
+percent.mt_top=15
+nFeature_RNA_top=5000
+dims.clustering=1:14
+resolution.clustering = 0.4
+dims.umap=1:14
+
+# Basic QC plots (pre-processing)
+VlnPlot_custom(sobj_tmp)
+FeatureScatter_custom1(sobj_tmp)
+FeatureScatter_custom2(sobj_tmp)  
+
+# Run Seurat Processing
+sobj_tmp <- SeuratProc1(sobj_tmp)
+
+```
+
+### Post-Processing
+```{r}
+
+# Basic QC plots (post-processing)
+VlnPlot_custom(sobj_tmp)
+FeatureScatter_custom1(sobj_tmp)
+FeatureScatter_custom2(sobj_tmp)  
+
+# UMAP Plot
+DimPlot_custom1(sobj_tmp)
+
+# Check clustering by features or mito genes
+FeaturePlot_custom1(sobj_tmp)
+
+# Check doublets of B and T cells
+FeaturePlot_custom2(sobj_tmp)
+FeaturePlot_custom2(sobj_tmp, markers = c("CD79A", "CD3E"))
+
+```
+
+### Assign cell types by RNA cluster
+```{r}
+
+B <-  c("0", "1", "2", "3", "6")
+Tc <- c("4", "5")
+O <-  c()
+
+sobj_tmp$CT_rnaCluster <- 
+  left_join(
+    data.frame(sobj_tmp@meta.data),
+    tibble(seurat_clusters=c(B, Tc, O) %>% as.factor(), 
+           CT_rnaCluster=c(rep("B", length(B)), 
+                           rep("T", length(Tc)), 
+                           rep("Other", length(O))) %>% as.factor()
+          )
+    )%>% pull(CT_rnaCluster)
+
+DimPlot_custom2(sobj_tmp)
+
+sobjs[[3]] <- sobj_tmp
+
+```
+
+## Fourth sample
+### Pre-Processing
+```{r}
+samples[4]
+sobj_tmp <- sobjs[[4]]
+
+# Set processing parameters
+nFeature_RNA_low=1050
+percent.mt_top=15
+nFeature_RNA_top=7000
+dims.clustering=1:14
+resolution.clustering = 0.4
+dims.umap=1:14
+
+# Basic QC plots (pre-processing)
+VlnPlot_custom(sobj_tmp)
+FeatureScatter_custom1(sobj_tmp)
+FeatureScatter_custom2(sobj_tmp)  
+
+# Run Seurat Processing
+sobj_tmp <- SeuratProc1(sobj_tmp)
+
+```
+
+### Post-Processing
+```{r}
+
+# Basic QC plots (post-processing)
+VlnPlot_custom(sobj_tmp)
+FeatureScatter_custom1(sobj_tmp)
+FeatureScatter_custom2(sobj_tmp)  
+
+# UMAP Plot
+DimPlot_custom1(sobj_tmp)
+
+# Check clustering by features or mito genes
+FeaturePlot_custom1(sobj_tmp)
+
+# Check doublets of B and T cells
+FeaturePlot_custom2(sobj_tmp)
+FeaturePlot_custom2(sobj_tmp, markers = c("CD79A", "CD3E"))
+FeaturePlot_custom2(sobj_tmp, markers = c("C1QC", "C1QA"))
+
+sobj_tmp <- subset(sobj_tmp, idents = c(0:6, 8, 10, 11))
+
+```
+
+### Post-Processing (II)
+```{r}
+
+# Run Seurat Processing
+sobj_tmp <- SeuratProc1(sobj_tmp)
+
+# UMAP Plot
+DimPlot_custom1(sobj_tmp)
+
+# Check doublets of B and T cells
+FeaturePlot_custom2(sobj_tmp)
+
+```
+
+### Assign cell types by RNA cluster
+```{r}
+
+B <-  c("0", "4", "6", "8", "9")
+Tc <- c("1", "2", "3", "5", "7")
+O <-  c("10")
+
+sobj_tmp$CT_rnaCluster <- 
+  left_join(
+    data.frame(sobj_tmp@meta.data),
+    tibble(seurat_clusters=c(B, Tc, O) %>% as.factor(), 
+           CT_rnaCluster=c(rep("B", length(B)), 
+                           rep("T", length(Tc)), 
+                           rep("Other", length(O))) %>% as.factor()
+          )
+    )%>% pull(CT_rnaCluster)
+
+DimPlot_custom2(sobj_tmp)
+
+sobjs[[4]] <- sobj_tmp
+
+```
+
+# Final objects
+```{r}
+
+sobjs
+
+```
+
+# Save objects
+```{r}
+
+for(i in 1:length(sobjs)){
+  saveRDS(object = sobjs[[i]], file = paste0("output/SeuratObjects_Proc/SeuratObject_Proc_", 
+                                             samples[i], ".rds"))
+  }
+
+```

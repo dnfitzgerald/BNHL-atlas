@@ -1,0 +1,216 @@
+---
+title: "Integrate Data - Bcells"
+author: Tobias Roider
+date: "Last compiled on `r format(Sys.time(), '%d %B, %Y, %X')`"
+output: html_document# Find
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r options, include=FALSE, warning = FALSE}
+library(knitr)
+opts_chunk$set(echo=TRUE, tidy=FALSE, include=TRUE, message=FALSE,
+               dpi = 100, cache = FALSE, warning = FALSE)
+options(bitmapType = "cairo")
+
+```
+
+# Load packages and functions
+```{r Load packages and functions}
+
+library(Seurat)
+library(tidyverse)
+library(readxl)
+
+source("code/SeuratProc.R")
+source("code/QCplots.R")
+
+```
+
+# Read and merge data
+```{r}
+
+sobjs_B <- readRDS(file = "output/List_SeuratObjects_B.rds")
+
+# Remove empty Objects
+sobjs_B <- compact(sobjs_B)
+length(sobjs_B)
+
+# Merge objects
+for(i in 1:length(sobjs_B)) {
+  if(i==1){
+    Combined_B <- merge(sobjs_B[[1]], sobjs_B[[2]])
+  }
+  if(i>2){
+    Combined_B <- merge(Combined_B, sobjs_B[[i]])
+  }
+}
+
+rm(sobjs_B)
+
+```
+
+```{r eval=T, include=F}
+
+Combined_B <- subset(Combined_B, subset = Entity!="CLL")
+
+```
+
+# Split objects by run
+```{r}
+
+splitted_objects <- SplitObject(Combined_B, split.by = "Run")
+
+```
+
+# RNA
+## Find anchors and integrate data
+```{r}
+
+anchors <- FindIntegrationAnchors(object.list = splitted_objects, 
+                                  dims = 1:20, 
+                                  assay = rep("RNA", length(splitted_objects)))
+
+Combined_B <- IntegrateData(anchorset = anchors, 
+                                new.assay.name = "integratedRNA")
+
+DefaultAssay(Combined_B) <- "integratedRNA"
+
+```
+
+## Revemove cells with missing values
+```{r}
+
+cells_remove <- 
+  Combined_B@assays$integratedRNA@data %>% 
+  as.matrix() %>% 
+  is.na() %>% .[1, ] %>% which %>% names
+
+length(cells_remove)
+
+Combined_B <- subset(Combined_B, cells = setdiff(colnames(Combined_B), cells_remove))
+
+```
+
+## Standard workflow for integrated object
+```{r}
+
+Combined_B <- ScaleData(Combined_B, verbose = FALSE) 
+Combined_B <- RunPCA(Combined_B, 
+                     reduction.name = "pcaRNA", reduction.key = "pcaRNA_")
+
+Combined_B <- RunUMAP(Combined_B, dims = 1:20, reduction.key = "umapRNA_",
+                      reduction.name = "umapRNA", reduction = "pcaRNA")
+
+Combined_B <- FindNeighbors(Combined_B, reduction = "pcaRNA", dims = 1:20)
+Combined_B <- FindClusters(Combined_B, resolution = 0.4)
+Combined_B <- FindClusters(Combined_B, resolution = 0.6)
+Combined_B <- FindClusters(Combined_B, resolution = 0.8)
+
+```
+
+## Visualization
+```{r}
+
+DimPlot(Combined_B, reduction = "umapRNA", label = T)
+
+DimPlot(Combined_B, reduction = "umapRNA", label = F, group.by = "PatientID")+
+  theme(legend.position = "none")
+
+```
+
+## Plot heatmap
+```{r fig.height=8}
+
+markers <-  FindAllMarkers(Combined_B)
+top_markers <- 
+  markers %>% 
+  group_by(cluster) %>% 
+  top_n(5, avg_log2FC) %>% pull(gene)
+
+DoHeatmap(Combined_B, features = top_markers, size=3)
+
+```
+
+# ADT
+## Find anchors and integrate data
+```{r}
+
+anchors <- FindIntegrationAnchors(object.list = splitted_objects, 
+                                  dims = 1:20, 
+                                  assay = rep("ADT", length(splitted_objects)))
+
+Combined_B_ADT <- IntegrateData(anchorset = anchors,
+                                new.assay.name = "integratedADT")
+
+Combined_B[["integratedADT"]] <- Combined_B_ADT[["integratedADT"]]
+
+rm(Combined_B_ADT)
+
+```
+
+## Revemove cells with missing values
+```{r}
+
+cells_remove <- 
+  Combined_B@assays$integratedADT@data %>% 
+  as.matrix() %>% 
+  is.na() %>% .[1, ] %>% which %>% names
+
+length(cells_remove)
+
+Combined_B <- subset(Combined_B, cells = setdiff(colnames(Combined_B), cells_remove))
+
+```
+
+## Standard workflow for integrated object
+```{r}
+
+DefaultAssay(Combined_B) <- "integratedADT"
+
+# Run the standard workflow for visualization and clustering
+Combined_B <- ScaleData(Combined_B, verbose = FALSE)
+Combined_B <- RunPCA(Combined_B, npcs = 30, nfeatures.print = 5,
+                         reduction.name = "pcaADT", reduction.key = "pcaADT_")
+
+Combined_B <- RunUMAP(Combined_B, reduction = "pcaADT", dims = 1:20, 
+                          reduction.name = "umapADT", 
+                          reduction.key = "umapADT_")
+
+Combined_B <- FindNeighbors(Combined_B, reduction = "pcaADT", 
+                                dims = 1:20)
+Combined_B <- FindClusters(Combined_B, resolution = 0.4)
+Combined_B <- FindClusters(Combined_B, resolution = 0.6)
+Combined_B <- FindClusters(Combined_B, resolution = 0.8)
+
+```
+
+## Visualization
+```{r}
+
+DimPlot(Combined_B, reduction = "umapADT", label = TRUE)
+DimPlot(Combined_B, reduction = "umapADT", 
+        label = FALSE, group.by = "PatientID")+
+  theme(legend.position = "none")
+
+```
+
+## Plot heatmap
+```{r}
+
+markers <-  FindAllMarkers(Combined_B)
+top_markers <- 
+  markers %>% 
+  group_by(cluster) %>% 
+  top_n(5, avg_log2FC) %>% pull(gene)
+
+DoHeatmap(Combined_B, features = top_markers, size=4)
+
+```
+
+# Save object
+```{r}
+
+saveRDS(Combined_B, file = "output/SeuratObjects_Int/Combined_B.rds")
+
+```
