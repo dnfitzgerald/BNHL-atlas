@@ -19,7 +19,7 @@ library(Seurat)
 ```
 
 ```{r}
-# Data for each Run in which each sample's RNA has been subject to QC filtering, log normalizaton, feature selection (n=2000), scaling, PCA and clustering is loaded. Cell cycle and mitochondrial gene effects were regressed out during scaling. ADT data has been subject to CLR normalization and scaling. See code/SeuratProcessing/ for details.
+# Data for each Run in which each sample's RNA has been subject to QC filtering, log normalizaton, feature selection (n=2000), scaling, PCA and clustering is loaded. Cell cycle and mitochondrial gene effects were regressed out during scaling. ADT data has been subject to CLR normalization and scaling.
 sobj <- readRDS("data/SeuratObjects/Runs/SeuratObjects1.rds")
 sobj2 <- readRDS("data/SeuratObjects/Runs/SeuratObjects2.rds")
 sobj3 <- readRDS("data/SeuratObjects/Runs/SeuratObjects3.rds")
@@ -39,7 +39,7 @@ sobjList <- list(sobj$LN0050, sobj$LN0097, sobj2$LN0100, sobj2$LN0107, sobj3$LN0
 ```
 
 ```{r}
-saveRDS(sobjList, file = "data/SeuratObjects/Lists/Run1-11.rds")
+saveRDS(sobjList, file = "data/SeuratObjects/Lists/Run.rds")
 ```
 
 
