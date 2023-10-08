@@ -1,0 +1,1354 @@
+---
+title: "Mapping Maturation States from the Reactive Lymph Node Reference to Tumor Samples"
+author: "Donnacha Fitzgerald"
+date: '2022-10-11'
+output: html_document
+---
+
+This script serves to map B-cell maturation states from the reactive lymph node reference (rLNmap.Rmd) to tumor samples in the CITE-Seq dataset.
+
+```{r setup, include=FALSE, set.seed(23)}
+knitr::opts_chunk$set(echo = TRUE, cache = T)
+```
+
+# Load Packages and Reference Data
+
+```{r, message=FALSE}
+library(workflowr)
+library(tidyverse)
+library(Seurat)
+```
+
+```{r}
+rLN <- readRDS(file = "data/Objects/rLN.rds")
+DefaultAssay(rLN) <- "RNA"
+```
+
+## Visualize sample distribution and maturation state mappings
+
+```{r, fig.width = 10, fig.height = 7}
+DimPlot(rLN, group.by = c("PatientID", "predicted.Maturation.bulk", "Maturation_course", "Maturation_fine"), shuffle = TRUE)
+```
+
+```{r, fig.width = 10, fig.height = 7}
+Idents(rLN ) <- "Maturation_fine"
+# Set color palette for maturation states
+mathue1 <- c("#043db0", # Naive
+                 "#952ba6", # DZ
+                 "#d71488", # LZ
+                 "#fc3861", # MD27
+                 "#ff6e38", # IgG
+                 "#e29400") # Plasma
+mathue2 <- c("#043db0", # Naive
+                 "#032b7d",
+                 "#952ba6", # DZ
+                 "#d71488", # LZ
+                 "#890a56", 
+                 "#fc3861", # MD27
+                 "#dd2954",
+                 "#c12347",
+                 "#9b1e39",
+                 "#ff6e38", # IgG
+                 "#df592d",
+                 "#c04c25",
+                 "#9c3e1d",
+                 "#e29400") # Plasma
+mathue3 <- c("#00293c",
+             "#4f5998",
+             "#a159a2",
+             "#e75688",
+             "#ff7156",
+             "#cbc700")
+DimPlot(rLN, label = TRUE, repel = TRUE,
+        cols = mathue2,
+        label.box = TRUE, 
+        label.color = "white",
+        label.size = 4) + coord_fixed() +
+  ggtitle("Refined Maturation States") +
+  NoLegend()
+```
+
+# Mapping 5 Prime BCR Data
+
+```{r}
+# Load 5 prime RNA Seq data with B cell receptor profiling
+BCR <- readRDS("data/Objects/5prime.rds")
+```
+
+Cell type classification is performed as per the method described in the following vignette:  https://satijalab.org/seurat/articles/integration_mapping.html
+
+```{r, message=FALSE, verbose=FALSE}
+# Reference mapping function
+refmap <- function(x){
+  anchors <- FindTransferAnchors(reference = rLN, query = x,
+    dims = 1:50, reference.reduction = "pcaRNA")
+  x <- MapQuery(anchorset = anchors, reference = rLN, query = x,
+    refdata = list(Maturation_course = "Maturation_course", Maturation_fine = "Maturation_fine"), reference.reduction = "pcaRNA", reduction.model = "umapRNA")
+  return(x)
+}
+BCR <- lapply(BCR, refmap)
+```
+```{r}
+order <- function(x){  # Set order of identity classes to match maturation process
+  x$predicted.Maturation_fine <- factor(x$predicted.Maturation_fine, 
+                      levels = c("Naïve", "Naïve (ACTB+)", "DZ", "Early LZ", 
+                                 "Late LZ", "IgM/IgD Mem", "IgM/IgD Mem (CD25+)", 
+                                 "IgM/IgD Mem (EGR1+)", "Mixed Mem (IFI)", 
+                                 "IgG Mem", "IgA Mem",
+                                 "Mixed Mem (HSP+)", "Mixed Mem (CD11c+)",
+                                 "Plasma"))
+  x$predicted.Maturation_course <- factor(x$predicted.Maturation_course, 
+                      levels = c("Naïve", "DZ", "LZ", "MD27", "IgG", "Plasma"))
+  return(x)
+}
+BCR <- lapply(BCR, order)
+```
+
+## Visualize predictions
+
+### Course
+```{r}
+lapply(BCR, DimPlot, group.by = "predicted.Maturation_course",
+       label = TRUE, repel = TRUE,
+        cols = mathue1,
+        label.box = TRUE, 
+        label.color = "white",
+        label.size = 4,
+       reduction = "ref.umap")
+```
+```{r}
+# Merge objects for consistent annotations
+BCRmerged <- merge(BCR$LN0217, y = c(BCR$LN0302, BCR$LN0278, BCR$LN0193, BCR$LN0178, BCR$LN0144, BCR$LN0132, BCR$LN0078), merge.dr = c("ref.umap"))
+BCRmerged <- order(BCRmerged)
+```
+
+
+```{r}
+DimPlot(BCR$LN0217, 
+        group.by = "predicted.Maturation_fine",
+        cols = mathue2,
+       reduction = "ref.umap",
+       ncol = 2) +
+  coord_fixed()
+```
+
+
+```{r, fig.width = 15, fig.height = 3}
+BCRmerged$PatientID <- factor(BCRmerged$PatientID, 
+                      levels = c("LN0132", # rLN
+                                 "LN0078", # MCL
+                                 "LN0144", # FL
+                                 "LN0278", # FL
+                                 "LN0178", # DLBCL, GCB
+                                 "LN0193", # DLBCL, GCB
+                                 "LN0217", # MZL
+                                 "LN0302" # MZL
+                                 ))
+# Fine
+DimPlot(BCRmerged, 
+        split.by = "PatientID",  
+        group.by = "predicted.Maturation_fine",
+        cols = mathue2,
+       reduction = "ref.umap",
+       ncol = 8) +
+  coord_fixed() +
+  ggtitle("Maturation States")
+ggsave("papers/Bcells/figures/ReferenceMapping/BCRmaturationUMAP_fine.pdf")
+# Course
+DimPlot(BCRmerged, 
+        split.by = "PatientID",  
+        group.by = "predicted.Maturation_course",
+        cols = mathue3,
+       reduction = "ref.umap",
+       ncol = 8) +
+  coord_fixed() +
+  ggtitle("Maturation States")+
+  labs(x = "UMAP 1", y = "UMAP 2")
+ggsave("papers/Bcells/figures/ReferenceMapping/BCRmaturationUMAP_course.pdf")
+```
+```{r}
+DimPlot(BCR$LN0144,  
+        group.by = "predicted.Maturation_course",
+        cols = mathue3,
+       reduction = "ref.umap") +
+  coord_fixed() +
+  ggtitle("Maturation States") +
+  labs(x = "UMAP 1", y = "UMAP 2") +
+  theme(legend.position = "bottom")
+ggsave("papers/Bcells/figures/ReferenceMapping/LN0144maturationUMAP_course.pdf")
+```
+
+
+```{r, fig.width = 5, fig.height = 9}
+matplot <- function(x, group, scale){
+  DotPlot(x, assay = "RNA", group.by = group,
+            features = rev(c("IGHD", "IGHM", "TCL1A", "SELL", "CD1C", "CXCR5", 
+                         "MME", "BCL6", "CCNB1", "AICDA", 
+                         "CAMK1", "CD72", "MS4A1", "PTPN6", 
+                         "SLA", "FCRL2", "CFLAR", "FOXP1",
+                         "CD83", "EBI3", "BTK", "BLK", "CD74", "BLNK", 
+                         "CD40", "NFKB1", "NFKB2", "TRAF1", "ICAM1", "REL", "RELB", "BACH2", 
+                         "CCR6", "GPR183", 
+                         "TNFRSF17","IRF4", "PRDM1", 
+                         "CD38","FAS", "IGHG1", "IGHA1", "IGHE", "CXCR3", 
+                         "IGLC2","IGKC")), dot.scale = scale) + 
+      RotatedAxis() + coord_flip() + ggtitle(x$PatientID[1]) +
+  scale_color_viridis_c(direction = -1)
+  ggsave(paste0("papers/Bcells/figures/ReferenceMapping/BCRmaturation_course",x$PatientID[1], ".pdf"), width = 5, height = 9)
+}
+lapply(BCR, matplot, scale = 4, 
+        group = "predicted.Maturation_course")
+```
+
+```{r}
+DotPlot(BCRmerged, assay = "RNA", split.by = "PatientID",
+            features = rev(c("IGHD", "IGHM", "TCL1A", "SELL", "CD1C", "CXCR5", 
+                         "MME", "BCL6", "CCNB1", "AICDA", 
+                         "CAMK1","IRKCB", "CD72", "MS4A1", "PTPN6", 
+                         "SLA", "FCRL2", "CFLAR", "FOXP1",
+                         "CD83", "EBI3", "BTK", "BLK", "CD74", "BLNK", 
+                         "CD40", "NFKB1", "NFKB2", "TRAF1", "ICAM1", "REL", "RELB", "BACH2", 
+                         "CCR6", "GPR183", 
+                         "TNFRSF17","IRF4", "PRDM1", 
+                         "CD38","FAS", "IGHG1", "IGHA1", "IGHE", "CXCR3", 
+                         "IGLC2","IGKC")), dot.scale = 3) + 
+      RotatedAxis() + coord_flip() + ggtitle("Maturation Marker Expression")
+```
+
+
+### Clonotype
+
+```{r, fig.width = 14, fig.height = 3}
+DimPlot(BCRmerged, 
+        split.by = "PatientID",  
+        group.by = "b_clonotype_id",
+       reduction = "ref.umap",
+       ncol = 8,
+       cols = "Set1") +
+  coord_fixed() +
+  ggtitle("BCR Clonotype") +
+  NoLegend() +
+  labs(x = "UMAP 1", y = "UMAP 2")
+ggsave("papers/Bcells/figures/ReferenceMapping/BCRclonotypeUMAP.pdf")
+```
+
+```{r, fig.width = 4, fig.height = 4}
+DimPlot(BCR$LN0144, 
+        group.by = "b_clonotype_id",
+       reduction = "ref.umap",
+       cols = "Set1") +
+  coord_fixed() +
+  ggtitle("BCR Clonotype") +
+  NoLegend() +
+  labs(x = "UMAP 1", y = "UMAP 2")
+ggsave("papers/Bcells/figures/ReferenceMapping/LN0144clonotypeUMAP.pdf")
+```
+### Kappa vs lambda light chain
+```{r}
+KLR <- function(x){
+  klr <- x@assays$RNA@counts["IGKC",]/(x@assays$RNA@counts["IGKC",] + x@assays$RNA@counts["IGLC1",] + x@assays$RNA@counts["IGLC2",] + x@assays$RNA@counts["IGLC3",] + x@assays$RNA@counts["IGLC5",] + x@assays$RNA@counts["IGLC6",] + x@assays$RNA@counts["IGLC7",]) %>% t()
+  x@meta.data$KLR <- klr[1,]
+  return(x)
+}
+BCR <- lapply(BCR, KLR)
+```
+
+KLR <- function(x) {
+  klr <- x@assays$ADT@counts[".Kappa",]/(x@assays$ADT@counts[".Kappa",] + x@assays$ADT@counts[".Lambda",]) %>% t()
+  x@meta.data$KLR <- klr[1,]
+  return(x)
+}
+
+```{r, fig.width=4, fig.height = 4}
+  klr <- BCR$LN0144@assays$RNA@counts["IGKC",]/(BCR$LN0144@assays$RNA@counts["IGKC",] + BCR$LN0144@assays$RNA@counts["IGLC1",] + BCR$LN0144@assays$RNA@counts["IGLC2",] + BCR$LN0144@assays$RNA@counts["IGLC3",] + BCR$LN0144@assays$RNA@counts["IGLC7",]) %>% t()
+  BCR$LN0144@meta.data$KLR <- klr[1,]
+FeaturePlot(BCR$LN0144,  
+        features = "KLR",
+        cols = c("blue", "red"),
+       reduction = "ref.umap") +
+  coord_fixed() +
+  ggtitle("Kappa vs Lambda") +
+  labs(x = "UMAP 1", y = "UMAP 2") +
+  theme(legend.position = "bottom") +
+  NoLegend()
+ggsave("papers/Bcells/figures/ReferenceMapping/LN0144KLRumap.pdf")
+```
+
+```{r}
+BCRplot <- function(x){
+  DimPlot(x, 
+        split.by = "PatientID",  
+        group.by = "b_clonotype_id",
+       reduction = "ref.umap",
+       ncol = 8) +
+  coord_fixed() +
+  ggtitle("BCR Clonotype") +
+  NoLegend()
+}
+lapply(BCR, BCRplot)
+```
+
+### Fine
+```{r}
+lapply(BCR, DimPlot, group.by = "predicted.Maturation_fine",
+        cols = mathue2,
+       reduction = "ref.umap")
+```
+
+```{r, fig.width = 20, fig.height = 4}
+# Course
+DimPlot(BCRmerged, 
+        split.by = "PatientID",  
+        group.by = "predicted.Maturation_fine",
+        cols = mathue2,
+       reduction = "ref.umap",
+       ncol = 8) +
+  coord_fixed() +
+  ggtitle("Maturation States")
+ggsave("papers/Bcells/figures/ReferenceMapping/BCRmaturationUMAP_fine.pdf")
+```
+
+```{r}
+saveRDS(BCR, "data/Objects/5prime.rds")
+```
+
+
+## Malignant cells only
+```{r}
+# Select 7 most abundant clones (1 expanded clone per malignant sample)
+clones <- sort(table(BCRmerged$b_clonotype_id),decreasing=TRUE)[1:7]
+```
+
+```{r}
+Malignant <- subset(BCRmerged, subset = b_clonotype_id == rownames(clones))
+```
+
+```{r, fig.width = 11, fig.height = 2.75}
+ggplot(Malignant@meta.data, aes(x = PatientID, fill = predicted.Maturation_course)) +
+  geom_bar(position = "fill") + 
+  ggtitle("Maturation State Proportions in Tumors") +
+  RotatedAxis() +
+  theme_minimal() +
+  theme(legend.position = "left", plot.title = element_text(hjust = 0.4), axis.title.x = element_text(hjust = 0.4)) +
+  scale_fill_manual(values = mathue3, name = "Maturation") +
+  ylab("Proportion")  +
+  xlab("")
+ggsave("papers/Bcells/figures/ReferenceMapping/BCRmaturationbar.pdf")
+```
+
+# Mapping CITE-Seq by Entity
+
+```{r}
+rm(BCR, BCRmerged, Malignant)
+gc()
+Entities <- readRDS(file = "data/Objects/B_EntityList.rds")
+```
+
+```{r, message = FALSE, verbose = FALSE}
+# Mapping from rLN reference
+refmap <- function(x){
+  # Match assays
+  DefaultAssay(rLN) <- "integratedRNA"
+  DefaultAssay(x) <- "integratedRNA"
+  anchors <- FindTransferAnchors(reference = rLN, query = x,
+    dims = 1:50, reference.reduction = "pcaRNA")
+  x <- MapQuery(anchorset = anchors, reference = rLN, query = x,
+    refdata = list(Maturation_course = "Maturation_course", Maturation_fine = "Maturation_fine"), reference.reduction = "pcaRNA", reduction.model = "umapRNA")
+  return(x)
+}
+Entities <- lapply(Entities, refmap)
+```
+
+```{r}
+# Set order of maturation states
+Entities <- lapply(Entities, order)
+```
+
+## Visualize predictions
+
+### Course
+
+```{r}
+# Default Assays: rLN = "integratedRNA", Entities = "integratedRNA"
+lapply(Entities, DimPlot, group.by = "predicted.Maturation_course",
+        cols = mathue1,
+       reduction = "ref.umap")
+```
+```{r, fig.width = 5, fig.height = 9}
+matplot <- function(x, group, scale){
+  DotPlot(x, assay = "RNA", group.by = group,
+            features = rev(c("IGHD", "IGHM", "TCL1A", "SELL", "CD1C", "CXCR5", 
+                         "MME", "BCL6", "CCNB1", "AICDA", 
+                         "CAMK1", "CD72", "MS4A1", "PTPN6", 
+                         "SLA", "FCRL2", "CFLAR", "FOXP1",
+                         "CD83", "EBI3", "BTK", "BLK", "CD74", "BLNK", 
+                         "CD40", "NFKB1", "NFKB2", "TRAF1", "ICAM1", "REL", "RELB", "BACH2", 
+                         "CCR6", "GPR183", 
+                         "TNFRSF17","IRF4", "PRDM1", 
+                         "CD38","FAS", "IGHG1", "IGHA1", "IGHE", "CXCR3", 
+                         "IGLC2","IGKC")), dot.scale = scale,
+          cols = c("white", "darkgreen")) + 
+      RotatedAxis() + coord_flip() + ggtitle(x$Entity[1])
+  ggsave(paste0("papers/Bcells/figures/ReferenceMapping/EntitiesmaturationDotPlot_course",x$Entity[1], ".pdf"), width = 5, height = 9)
+}
+lapply(Entities, matplot, scale = 4, 
+        group = "predicted.Maturation_course")
+```
+
+```{r, fig.height = 20, fig.width = 20}
+# Default Assays: rLN = "integratedRNA", Entities = "integratedRNA"
+PlotAll <- function(x){
+DimPlot(x, group.by = "predicted.Maturation_course",
+       split.by = "PatientID",
+        cols = mathue1,
+       reduction = "ref.umap",
+       ncol = 5) +
+    coord_fixed() +
+    ggtitle(x$Entity[1])
+  ggsave(paste0("papers/Bcells/figures/ReferenceMapping/EntitiesmaturationDotPlot_course",x$Entity[1], ".pdf"), width = 10, height = 7)
+}
+lapply(Entities, PlotAll)
+```
+
+### Fine
+```{r}
+# Default Assays: rLN = "integratedRNA", Entities = "integratedRNA"
+lapply(Entities, DimPlot, group.by = "predicted.Maturation_fine",
+       label = TRUE, repel = TRUE,
+        cols = mathue2,
+        label.box = TRUE, 
+        label.color = "white",
+        label.size = 3,
+       reduction = "ref.umap")
+```
+```{r, fig.width = 7, fig.height = 9}
+matplot <- function(x, group, scale){
+  DotPlot(x, assay = "RNA", group.by = group,
+            features = rev(c("IGHD", "IGHM", "TCL1A", "SELL", "CD1C", "CXCR5", 
+                         "MME", "BCL6", "CCNB1", "AICDA", 
+                         "CAMK1", "CD72", "MS4A1", "PTPN6", 
+                         "SLA", "FCRL2", "CFLAR", "FOXP1",
+                         "CD83", "EBI3", "BTK", "BLK", "CD74", "BLNK", 
+                         "CD40", "NFKB1", "NFKB2", "TRAF1", "ICAM1", "REL", "RELB", "BACH2", 
+                         "CCR6", "GPR183", 
+                         "TNFRSF17","IRF4", "PRDM1", 
+                         "CD38","FAS", "IGHG1", "IGHA1", "IGHE", "CXCR3", 
+                         "IGLC2","IGKC")), dot.scale = scale, cols = c("white", "darkgreen")) + 
+      RotatedAxis() + coord_flip() + ggtitle(x$Entity[1])
+  ggsave(paste0("papers/Bcells/figures/ReferenceMapping/EntitiesmaturationDotPlot_fine",x$Entity[1], ".pdf"), width = 7, height = 9)
+}
+lapply(Entities, matplot, scale = 4, 
+        group = "predicted.Maturation_fine")
+```
+
+
+### Patient
+
+```{r}
+# Default Assays: rLN = "integratedRNA", Entities = "integratedRNA"
+lapply(Entities, DimPlot, group.by = "PatientID", shuffle = TRUE,
+       reduction = "ref.umap")
+```
+### Kappa light chain proportion
+```{r}
+# Default Assays: rLN = "integratedRNA", Entities = "integratedRNA"
+lapply(Entities, FeaturePlot, features = "KLR",
+       cols = c("blue", "red"),
+       reduction = "ref.umap", split.by = "PatientID", ncol = 5)
+```
+```{r}
+saveRDS(Entities, "data/Objects/B_EntityList.rds")
+```
+
+```{r}
+PlotKLR <- function(x){
+FeaturePlot(x, features = "KLR",
+       split.by = "PatientID",
+        cols = c("blue", "red"),
+       reduction = "ref.umap") +
+    patchwork::plot_layout(ncol = 5, nrow = 3) +
+    ggtitle(x$Entity[1])
+  ggsave(paste0("papers/Bcells/figures/ReferenceMapping/EntitiesKLRPlot",x$Entity[1], ".pdf"), width = 20, height = 12)
+}
+lapply(Entities, PlotKLR)
+```
+
+```{r}
+FeaturePlot(Entities$MCL, features = "KLR",
+       split.by = "PatientID",
+        cols = c("blue", "red"),
+       reduction = "ref.umap",
+       ncol = 5) +
+    ggtitle(Entities$MCL$Entity[1])
+```
+
+## Heatmap of maturation scores from Holmes et al, 2020
+
+See https://pubmed.ncbi.nlm.nih.gov/32603407/
+
+The 50 most differentially expressed genes (positive and negative) for each maturation state identified in this study were used to calculate a score for each cell.
+
+```{r}
+colnames(Entities_merged@meta.data)
+```
+```{r}
+# Select only UPscores
+scores <- colnames(Entities_merged@meta.data) %>% str_which("UPscore")
+scores
+```
+
+```{r}
+# Add UPscores as new assay
+AddScores <- function(x){
+  scores <- colnames(x@meta.data) %>% str_which("UPscore")
+  x[["scores"]] <- x@meta.data[, scores] %>% t() %>% CreateAssayObject()
+  x <- FindVariableFeatures(x, assay = "scores") %>% ScaleData(assay = "scores")
+}
+Entities_merged <- AddScores(Entities_merged)
+Entities <- lapply(Entities, AddScores)
+```
+
+```{r, fig.width = 4, fig.height = 4}
+# Plot scaled scores for each maturation state
+ScoresHeatmap <- function(x){
+  Idents(x) <- "predicted.Maturation_course"
+  AverageExpression(x, return.seurat = TRUE, assays = "scores", slot = "scale.data") %>% 
+    DoHeatmap(assay = "scores", label = TRUE ,draw.lines = FALSE, slot = "scale.data",
+              features = rownames(x@assays$scores@scale.data),
+              group.colors = mathue1, group.bar = TRUE, size = 3, raster = FALSE) + 
+    scale_fill_gradientn(colors = rev(RColorBrewer::brewer.pal(n =10, name = "RdYlBu")))+
+    ggtitle(x$Entity[1]) +
+    theme(plot.title = element_text(size=15))
+  ggsave(paste0("papers/Bcells/figures/ReferenceMapping/", x$Entity[1], "ScoresHeatmap_course.pdf"), width = 4, height = 4)
+}
+lapply(SplitObject(Entities_merged, split.by = "Entity"), ScoresHeatmap)
+```
+
+```{r}
+DoHeatmap(Entities_merged, assay = "scores", features = colnames(Entities_merged@meta.data[, 49:74]),
+          slot = "data",
+          group.by = "predicted.Maturation_course", group.bar = TRUE,
+          group.colors = mathue1, label = TRUE, draw.lines = TRUE)
+```
+
+## Merge trimmed objects
+
+```{r, eval = FALSE}
+# Reduce object sizes for merging
+Entities <- lapply(Entities, DietSeurat, 
+                   counts = FALSE, 
+                   data = TRUE,
+                   scale.data = TRUE,
+                   assays = c("integratedRNA", "integratedADT"),
+                   dimreducs = c("pcaRNA", "umapRNA", "pcaADT", "umapADT", "MOFA", "umapMOFA", "ref.pcaRNA", "ref.umap"))
+```
+
+```{r, eval = FALSE}
+Merg <- function(x){
+  x <- merge(x$rLN, y = c(x$MCL, x$FL, x$`DLBCL, GCB`, x$`DLBCL, non-GCB`, x$MZL), 
+                        merge.dr = c("ref.umap"))
+  return(x)
+}
+Entities_merged <- Merg(Entities)
+```
+
+```{r, fig.width = 15, fig.height = 4}
+Entities_merged <- order(Entities_merged)
+Entities_merged$Entity <- factor(Entities_merged$Entity, 
+                      levels = c("rLN", "MCL", "FL", "DLBCL, GCB", "DLBCL, non-GCB", "MZL"))
+Entities_merged$predicted.Maturation.bulk <- factor(Entities_merged$predicted.Maturation.bulk, 
+                      levels = c("Naïve", "DZ", "LZ", "MD27", "IgG", "Plasma"))
+# Fine
+DimPlot(Entities_merged, 
+        split.by = "Entity",  
+        group.by = "predicted.Maturation_fine",
+        label = TRUE, repel = TRUE,
+        label.box = TRUE, 
+        label.color = "white",
+        label.size = 2,
+        pt.size = 0.5,
+        cols = mathue2,
+        reduction = "ref.umap",
+        ncol = 6) +
+  coord_fixed() +
+  ggtitle("Maturation States by Entity")
+ggsave("papers/Bcells/figures/ReferenceMapping/EntitiesmaturationUMAP_fine.pdf", height = 8, width = 30)
+
+# Course
+DimPlot(Entities_merged, 
+        split.by = "Entity",  
+        group.by = "predicted.Maturation_course",
+        cols = mathue1,
+       reduction = "ref.umap",
+       ncol = 8,
+       pt.size = 0.5) +
+  coord_fixed() +
+  ggtitle("Maturation States by Entity")
+ggsave("papers/Bcells/figures/ReferenceMapping/EntitiesmaturationUMAP_course.pdf")
+DimPlot(Entities_merged, 
+        split.by = "Entity",  
+        group.by = "predicted.Maturation.bulk",
+        cols = mathue1,
+       reduction = "ref.umap",
+       ncol = 8,
+       pt.size = 0.5) +
+  coord_fixed() +
+  ggtitle("Maturation States by Entity")
+ggsave("papers/Bcells/figures/ReferenceMapping/EntitiesmaturationUMAP_bulk.pdf")
+```
+```{r, fig.width = 20}
+DimPlot(Entities_merged, 
+        group.by = c("predicted.Maturation.bulk", "predicted.Maturation_course", "predicted.Maturation_fine"),
+       reduction = "ref.umap",
+       ncol = 3,
+       pt.size = 0.5) +
+  coord_fixed()
+```
+
+## Heatmap of maturation scores from Holmes et al, 2020
+
+See https://pubmed.ncbi.nlm.nih.gov/32603407/
+
+The 50 most differentially expressed genes (positive and negative) for each maturation state identified in this study were used to calculate a score for each cell.
+
+```{r}
+colnames(Entities_merged@meta.data)
+```
+```{r}
+# Select only UPscores
+scores <- colnames(Entities_merged@meta.data) %>% str_which("UPscore")
+scores
+```
+
+```{r}
+# Add UPscores as new assay
+AddScores <- function(x){
+  scores <- colnames(x@meta.data) %>% str_which("UPscore")
+  x[["scores"]] <- x@meta.data[, scores] %>% t() %>% CreateAssayObject()
+  x <- FindVariableFeatures(x, assay = "scores") %>% ScaleData(assay = "scores")
+}
+Entities_merged <- AddScores(Entities_merged)
+Entities <- lapply(Entities, AddScores)
+```
+
+```{r, fig.width = 4, fig.height = 4}
+# Plot scaled scores for each maturation state mapped from the rLN reference
+ScoresHeatmap <- function(x){
+  Idents(x) <- "predicted.Maturation_course"
+  AverageExpression(x, return.seurat = TRUE, assays = "scores", slot = "scale.data") %>% 
+    DoHeatmap(assay = "scores", label = TRUE ,draw.lines = FALSE, slot = "scale.data",
+              features = rownames(x@assays$scores@scale.data),
+              group.colors = mathue1, group.bar = TRUE, size = 3, raster = FALSE) + 
+    scale_fill_gradientn(colors = rev(RColorBrewer::brewer.pal(n =10, name = "RdYlBu")))+
+    ggtitle(x$Entity[1]) +
+    theme(plot.title = element_text(size=15))
+  ggsave(paste0("papers/Bcells/figures/ReferenceMapping/", x$Entity[1], "ScoresHeatmap_course.pdf"), width = 4, height = 4)
+}
+lapply(SplitObject(Entities_merged, split.by = "Entity"), ScoresHeatmap)
+```
+
+```{r, fig.width = 4, fig.height = 4}
+# Plot scaled scores for each maturation state predicted from the sorted maturation states
+ScoresHeatmap <- function(x){
+  Idents(x) <- "predicted.Maturation.bulk"
+  AverageExpression(x, return.seurat = TRUE, assays = "scores", slot = "scale.data") %>% 
+    DoHeatmap(assay = "scores", label = TRUE ,draw.lines = FALSE, slot = "scale.data",
+              features = rownames(x@assays$scores@scale.data),
+              group.colors = mathue1, group.bar = TRUE, size = 3, raster = FALSE) + 
+    scale_fill_gradientn(colors = rev(RColorBrewer::brewer.pal(n =10, name = "RdYlBu")))+
+    ggtitle(x$Entity[1]) +
+    theme(plot.title = element_text(size=15))
+  ggsave(paste0("papers/Bcells/figures/ReferenceMapping/", x$Entity[1], "ScoresHeatmap_bulk.pdf"), width = 4, height = 4)
+}
+lapply(SplitObject(Entities_merged, split.by = "Entity"), ScoresHeatmap)
+```
+
+```{r}
+DoHeatmap(Entities_merged, assay = "scores", features = colnames(Entities_merged@meta.data[, 49:74]),
+          slot = "data",
+          group.by = "predicted.Maturation_course", group.bar = TRUE,
+          group.colors = mathue1, label = TRUE, draw.lines = TRUE)
+```
+
+## Sample Variation
+
+```{r, fig.width = 12, fig.height = 3.5}
+ggplot(Entities_merged@meta.data, aes(x = PatientID, fill = predicted.Maturation_course)) +
+  geom_bar(position = "fill") + 
+  ggtitle("Maturation State Proportions by Sample") +
+  RotatedAxis() +
+  theme_minimal() +
+  theme(legend.position = "right", plot.title = element_text(hjust = 0.5), axis.title.x = element_text(hjust = 0.5), axis.text.x = element_text(angle=45, size = 7)) +
+  scale_fill_manual(values = mathue1, name = "Maturation") +
+  ylab("Proportion") +
+  facet_grid(cols = vars(Entity), scales = "free") +
+  RotatedAxis()
+ggsave("papers/Bcells/figures/ReferenceMapping/Entitiesmaturationbar.pdf")
+```
+```{r, fig.width = 12, fig.height = 3.5, eval = FALSE}
+library(ggstatsplot)
+ggbarstats(data = Entities_merged@meta.data, x = predicted.Maturation_course, y = PatientID,
+           type = "nonparametric", paired = FALSE, label = "none") 
+```
+
+
+# Reference map on all CITE-Seq data Combined
+
+```{r}
+rm(Entities, Entities_merged)
+gc()
+# See RefMap_Cluster.Rmd. Mapping was performed with 'RNA' assays to reduce the bias introduced via integration
+Combined <- readRDS("data/Objects/Combined_B_refmap.rds") 
+```
+
+
+```{r, fig.width = 15, fig.height = 3.5}
+Combined <- order(Combined)
+Combined$Entity <- factor(Combined$Entity, 
+                      levels = c("rLN", "MCL", "FL", "DLBCL, GCB", "DLBCL, non-GCB", "MZL"))
+Combined$predicted.Maturation.bulk <- factor(Combined$predicted.Maturation.bulk, 
+                      levels = c("Naïve", "DZ", "LZ", "MD27", "IgG", "Plasma"))
+# Fine
+DimPlot(Combined, 
+        split.by = "Entity",  
+        group.by = "predicted.Maturation_fine",
+        pt.size = 0.5,
+        cols = mathue2,
+        reduction = "ref.umap",
+        ncol = 6) +
+  coord_fixed() +
+  ggtitle("Maturation States by Entity") +
+  labs(x = "UMAP 1", y = "UMAP 2")
+ggsave("papers/Bcells/figures/ReferenceMapping/EntitiesmaturationUMAP_fine2.pdf", height = 8, width = 30)
+
+# Course
+DimPlot(Combined, 
+        split.by = "Entity",  
+        group.by = "predicted.Maturation_course",
+        cols = mathue3,
+       reduction = "ref.umap",
+       ncol = 8,
+       pt.size = 0.5) +
+  coord_fixed() +
+  ggtitle("Maturation States by Entity")+
+  labs(x = "UMAP 1", y = "UMAP 2")
+ggsave("papers/Bcells/figures/ReferenceMapping/EntitiesmaturationUMAP_course2.pdf")
+DimPlot(Combined, 
+        split.by = "Entity",  
+        group.by = "predicted.Maturation.bulk",
+        cols = mathue3,
+       reduction = "ref.umap",
+       ncol = 8,
+       pt.size = 0.5) +
+  coord_fixed() +
+  ggtitle("Maturation States by Entity") +
+  labs(x = "UMAP 1", y = "UMAP 2")
+ggsave("papers/Bcells/figures/ReferenceMapping/EntitiesmaturationUMAP_bulk2.pdf")
+```
+```{r, fig.width = 20}
+DimPlot(Combined, 
+        group.by = c("predicted.Maturation.bulk", "predicted.Maturation_course", "predicted.Maturation_fine"),
+       reduction = "ref.umap",
+       ncol = 3,
+       pt.size = 0.5) +
+  coord_fixed()
+```
+
+## Heatmap of maturation scores from Holmes et al, 2020
+
+See https://pubmed.ncbi.nlm.nih.gov/32603407/
+
+The 50 most differentially expressed genes (positive and negative) for each maturation state identified in this study were used to calculate a score for each cell.
+
+```{r}
+colnames(Combined@meta.data)
+```
+
+```{r}
+# Add UPscores as new assay
+AddScores <- function(x){
+  scores <- colnames(x@meta.data) %>% str_which("UPscore")
+  x[["scores"]] <- x@meta.data[, scores] %>% t() %>% CreateAssayObject()
+  x <- FindVariableFeatures(x, assay = "scores") %>% ScaleData(assay = "scores")
+}
+Combined <- AddScores(Combined)
+scores <- rownames(Combined@assays$scores@scale.data)
+```
+
+```{r}
+Entities <- SplitObject(Combined, split.by = "Entity")
+```
+
+```{r, fig.width = 3, fig.height = 4}
+# Plot scaled scores for each maturation state predicted from the sorted maturation states
+ScoresHeatmap <- function(x){
+  Idents(x) <- "predicted.Maturation_course"
+  AverageExpression(x, return.seurat = TRUE, assays = "scores", slot = "scale.data") %>% 
+    DoHeatmap(assay = "scores", label = TRUE ,draw.lines = FALSE, slot = "scale.data",
+              features = rownames(x@assays$scores@scale.data),
+              group.colors = mathue1, group.bar = TRUE, size = 3, raster = FALSE,
+              disp.min = -2.5, disp.max = 2.5) + 
+    scale_fill_gradientn(colors = rev(RColorBrewer::brewer.pal(n =10, name = "RdYlBu")))+
+    ggtitle(x$Entity[1]) +
+    theme(plot.title = element_text(size=15)) +
+    NoLegend()
+  ggsave(paste0("papers/Bcells/figures/ReferenceMapping/", x$Entity[1], "ScoresHeatmap_course2.pdf"), width = 3, height = 4)
+}
+lapply(Entities, ScoresHeatmap)
+```
+
+
+```{r}
+Idents(Combined) <- "predicted.Maturation_course"
+AverageExpression(Combined, return.seurat = TRUE, assays = "scores", slot = "scale.data") %>% 
+    DoHeatmap(assay = "scores", label = TRUE ,draw.lines = FALSE, slot = "scale.data",
+              features = VariableFeatures(Combined, assay = "scores"),
+              group.colors = mathue1, group.bar = TRUE, size = 3, raster = FALSE,
+              disp.min = -2.5, disp.max = 2.5, split) + 
+    scale_fill_gradientn(colors = rev(RColorBrewer::brewer.pal(n =10, name = "RdYlBu")))+
+    ggtitle(Combined$Entity[1]) +
+    theme(plot.title = element_text(size=15))
+```
+
+
+```{r}
+# ggplot score heatmaps
+ggplot(Combined@meta.data, aes(x = predicted.Maturation_course, y = (colnames(Combined@meta.data) %>% str_which("UPscore")), fill = ))
+
+```
+
+```{r, fig.width = 4, fig.height = 4}
+# Plot scaled scores for each maturation state predicted from the sorted maturation states
+ScoresHeatmap <- function(x){
+  Idents(x) <- "predicted.Maturation.bulk"
+  AverageExpression(x, return.seurat = TRUE, assays = "scores", slot = "scale.data") %>% 
+    DoHeatmap(assay = "scores", label = TRUE ,draw.lines = FALSE, slot = "scale.data",
+              features = rownames(x@assays$scores@scale.data),
+              group.colors = mathue1, group.bar = TRUE, size = 3, raster = FALSE) + 
+    scale_fill_gradientn(colors = rev(RColorBrewer::brewer.pal(n =10, name = "RdYlBu")))+
+    ggtitle(x$Entity[1]) +
+    theme(plot.title = element_text(size=15))
+  ggsave(paste0("papers/Bcells/figures/ReferenceMapping/", x$Entity[1], "ScoresHeatmap_bulk2.pdf"), width = 4, height = 4)
+}
+lapply(SplitObject(Combined, split.by = "Entity"), ScoresHeatmap)
+```
+
+```{r}
+DoHeatmap(Combined, assay = "scores", features = colnames(Combined@meta.data[, 49:74]),
+          slot = "data",
+          group.by = "predicted.Maturation_course", group.bar = TRUE,
+          group.colors = mathue1, label = TRUE, draw.lines = TRUE)
+```
+
+## Sample Variation
+
+```{r, fig.width = 12, fig.height = 5}
+ggplot(Combined@meta.data, aes(x = PatientID, fill = predicted.Maturation_course)) +
+  geom_bar(position = "fill") + 
+  ggtitle("Maturation State Proportions by Sample") +
+  RotatedAxis() +
+  theme_minimal() +
+  theme(legend.position = "right", plot.title = element_text(hjust = 0.5), axis.title.x = element_text(hjust = 0.5), axis.text.x = element_text(angle=45, size = 7)) +
+  scale_fill_manual(values = mathue1, name = "Maturation") +
+  ylab("Proportion") +
+  facet_grid(cols = vars(Entity), scales = "free_x", space = "free_x") +
+  RotatedAxis()
+ggsave("papers/Bcells/figures/ReferenceMapping/Entitiesmaturationbar3.pdf", width = 12, height = 5)
+```
+
+```{r, fig.width = 12, fig.height = 5}
+ggplot(Combined@meta.data, aes(x = PatientID, fill = predicted.Maturation_course)) +
+  geom_bar(position = "fill") + 
+  ggtitle("Maturation State Proportions by Sample") +
+  RotatedAxis() +
+  theme_minimal() +
+  theme(legend.position = "right", plot.title = element_text(hjust = 0.5), axis.title.x = element_text(hjust = 0.5), axis.text.x = element_text(angle=45, size = 7)) +
+  scale_fill_manual(values = mathue1_old, name = "Maturation") +
+  ylab("Proportion") +
+  facet_grid(cols = vars(Entity), scales = "free_x", space = "free_x") +
+  RotatedAxis()
+ggsave("papers/Bcells/figures/ReferenceMapping/Entitiesmaturationbar3.pdf", width = 12, height = 5)
+```
+
+```{r, fig.width = 12, fig.height = 5}
+ggplot(Combined@meta.data, aes(x = PatientID, fill = predicted.Maturation_course)) +
+  geom_bar(position = "fill") + 
+  ggtitle("Maturation State Proportions by Sample") +
+  RotatedAxis() +
+  theme_minimal() +
+  theme(legend.position = "right", plot.title = element_text(hjust = 0.5), axis.title.x = element_text(hjust = 0.5), axis.text.x = element_text(angle=45, size = 7)) +
+  scale_fill_manual(values = mathue3, name = "Maturation") +
+  ylab("Proportion") +
+  xlab("Sample") +
+  facet_grid(cols = vars(Entity), scales = "free_x", space = "free_x") +
+  RotatedAxis()
+ggsave("papers/Bcells/figures/ReferenceMapping/Entitiesmaturationbar3.pdf", width = 12, height = 5)
+```
+```{r, fig.width = 2, fig.height = 2.5}
+ggplot(Combined@meta.data, aes(x = PatientID, fill = predicted.Maturation_course)) +
+  geom_bar(position = "fill") + 
+  ggtitle("Maturation State Proportions by Sample") +
+  theme_minimal() +
+  theme(axis.text.x=element_blank()) +
+  scale_fill_manual(values = mathue3, name = "Maturation") +
+  ylab("Proportion") +
+  RotatedAxis() +
+  NoLegend() +
+  xlab("Sample")
+ggsave("papers/Bcells/figures/ReferenceMapping/Entitiesmaturationbar3_small.pdf")
+```
+
+
+### Calculate chi-squared and Cramér's V statistics for independent variables Sample and Entity and dependent variable maturation state
+
+```{r, fig.width = 12, fig.height = 3.5, eval = FALSE}
+library(ggstatsplot)
+ggbarstats(data = Combined@meta.data, x = predicted.Maturation_course, y = PatientID,
+           type = "nonparametric", paired = FALSE) 
+ggsave("papers/Bcells/figures/ReferenceMapping/Samplesmaturationbarstats2.pdf")
+```
+
+```{r, fig.width = 8, fig.height = 2, eval = FALSE}
+library(ggstatsplot)
+ggbarstats(data = Combined@meta.data, x = predicted.Maturation_course, y = Entity,
+           type = "nonparametric", paired = FALSE) +
+  scale_fill_manual(values = rev(mathue3))
+ggsave("papers/Bcells/figures/ReferenceMapping/Entitiesmaturationbarstats2.pdf")
+```
+#### By sample split by entity
+```{r, fig.width = 5, fig.height = 5, eval = FALSE}
+statplot <- function(x){
+  ggbarstats(data = x@meta.data, x = predicted.Maturation_course, y = PatientID,
+           type = "nonparametric", paired = FALSE) +
+  scale_fill_manual(values = rev(mathue3)) + 
+    ggtitle(x$Entity[1])
+  ggsave(paste0("papers/Bcells/figures/ReferenceMapping/",x$Entity[1], "Maturationbarstats.pdf"))
+}
+lapply(Entities, statplot)
+```
+
+
+```{r}
+KLR <- function(x) {
+  klr <- x@assays$ADT@counts[".Kappa",]/(x@assays$ADT@counts[".Kappa",] + x@assays$ADT@counts[".Lambda",]) %>% t()
+  x@meta.data$KLR <- klr[1,]
+  return(x)
+}
+rLN <- KLR(rLN)
+Combined <- KLR(Combined)
+Entities <- lapply(Entities, KLR)
+```
+
+```{r, fig.width=24, fig.height=36}
+FeaturePlot(Combined, features = "KLR",
+       split.by = "PatientID",
+        cols = c("blue", "red"),
+       reduction = "ref.umap") +
+    patchwork::plot_layout(ncol = 5, nrow = 9)
+ggsave(paste0("papers/Bcells/figures/ReferenceMapping/SamplesKLRPlot_refmap.pdf"))
+```
+
+```{r, fig.width = 12, fig.height = 5}
+ggplot(Combined@meta.data, aes(x = PatientID, y = KLR)) +
+  geom_col() + 
+  ggtitle("Kappa Light Chain Positivity Proportion by Sample") +
+  RotatedAxis() +
+  theme_minimal() +
+  theme(legend.position = "right", plot.title = element_text(hjust = 0.5), axis.title.x = element_text(hjust = 0.5), axis.text.x = element_text(angle=45, size = 7)) +
+  ylab("Proportion Kappa Positive") +
+  facet_grid(cols = vars(Entity), scales = "free") +
+  RotatedAxis()
+ggsave("papers/Bcells/figures/ReferenceMapping/EntitiesKappabar2.pdf")
+```
+
+
+### Box plots of maturation state proportions
+
+#### DLBCL GCB vs ABC tests
+```{r, fig.width = 10}
+library(ggsignif)
+# Calculate the proportions of each maturation state in each sample, and create a data frame for each maturation state.
+MatProp <- table(Patient = Combined$PatientID, Entity = Combined$Entity, Maturation = Combined$predicted.Maturation_course) %>% prop.table(margin = 1) %>% as.data.frame() %>% filter(Freq != 0)
+# Boxplot distribution of predicted maturation states within each sample grouped by entity
+ggplot(MatProp, aes(x = Entity, y = Freq)) +
+  geom_boxplot(aes(col = Entity)) + 
+  ggbeeswarm::geom_beeswarm(aes(color = Entity), cex = 2, show.legend = FALSE) +
+  geom_signif(comparisons = list(c("DLBCL, GCB", "DLBCL, non-GCB")), # DLBCL GCB vs ABC
+              test = "wilcox.test", textsize = 3, map_signif_level = FALSE) +
+  ggtitle(paste0("Maturation State Proportion in Samples")) +
+  theme_bw() +
+  RotatedAxis() +
+  ylab("Maturation State Proportion") +
+  facet_grid(cols = vars(Maturation)) +
+  theme(strip.background =element_rect(fill="black")) +
+  theme(strip.text = element_text(colour = 'white'))
+ggsave("papers/Bcells/figures/ReferenceMapping/BoxPlotFrequency_DLBCL.pdf")
+```
+#### rLN vs Entity tests
+```{r, fig.width = 5, fig.height = 2.5}
+# Show only comparisons with significance
+sigFunc = function(x){
+  if(x < 0.001){"***"} 
+  else if(x < 0.01){"**"}
+  else if(x < 0.05){"*"}
+  else{NA}}
+# Boxplot distribution of predicted maturation states within each sample grouped by entity
+ggplot(MatProp, aes(x = Entity, y = Freq)) +
+  geom_boxplot(aes(col = Entity)) + 
+  ggbeeswarm::geom_beeswarm(aes(color = Entity), cex = 2, show.legend = FALSE) +
+  geom_signif(comparisons = list(c("rLN", "MCL"),
+                                 c("rLN", "FL"),
+                                 c("rLN", "DLBCL, GCB"),
+                                 c("rLN", "DLBCL, non-GCB"),
+                                 c("rLN", "MZL")),
+              test = "wilcox.test", textsize = 3, map_signif_level = sigFunc, 
+              step_increase = 0.05, show.legend = TRUE, vjust = 0.4) +
+  ggtitle(paste0("Maturation State Proportions by Entity")) +
+  theme_bw() +
+  RotatedAxis() +
+  ylab("Maturation State Proportion") +
+  theme(axis.title.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none") +
+  facet_grid(cols = vars(Maturation)) +
+  theme(strip.background =element_rect(fill="black")) +
+  theme(strip.text = element_text(colour = 'white')) +
+  theme(plot.title = element_text(hjust = 0.5))
+ggsave("papers/Bcells/figures/ReferenceMapping/BoxPlotFrequency_rLNvsAll.pdf")
+```
+
+#### FL vs DLBCL tests
+```{r, fig.width = 10}
+# Boxplot distribution of predicted maturation states within each sample grouped by entity
+ggplot(MatProp, aes(x = Entity, y = Freq)) +
+  geom_boxplot(aes(col = Entity)) + 
+  ggbeeswarm::geom_beeswarm(aes(color = Entity), cex = 2, show.legend = FALSE) +
+  geom_signif(comparisons = list(c("FL", "DLBCL, GCB"),
+                                 c("FL", "DLBCL, non-GCB"),
+                                 c("DLBCL, GCB", "DLBCL, non-GCB")),
+              test = "wilcox.test", textsize = 3, map_signif_level = sigFunc, 
+              step_increase = 0.05, show.legend = TRUE) +
+  ggtitle(paste0("Maturation State Proportion in Samples")) +
+  theme_bw() +
+  RotatedAxis() +
+  ylab("Maturation State Proportion") +
+  facet_grid(cols = vars(Maturation)) +
+  theme(strip.background =element_rect(fill="black")) +
+  theme(strip.text = element_text(colour = 'white'))
+ggsave("papers/Bcells/figures/ReferenceMapping/BoxPlotFrequency_FLvsDLBCL.pdf")
+```
+
+# Reference Mapped Combined Data Split by Sample
+
+```{r}
+Samples <- SplitObject(Combined, split.by = "PatientID")
+```
+
+
+```{r, fig.height = 4, fig.width = 4}
+# Plot maturation states for each sample independently
+PlotAll <- function(x){
+DimPlot(x, group.by = "predicted.Maturation_course",
+        cols = mathue3,
+       reduction = "ref.umap",) +
+    coord_fixed() +
+    ggtitle(paste(x$Entity[1], x$PatientID[1], sep = " ")) +
+    labs(x = "UMAP 1", y = "UMAP 2")
+  ggsave(paste0("papers/Bcells/figures/ReferenceMapping/Samples/", x$PatientID[1], "maturationDimPlot_course2.pdf"), width = 4, height = 4)
+}
+lapply(Samples, PlotAll)
+```
+# Reference Mapped Combined Data Split by Entity
+
+```{r}
+#Entities <- SplitObject(Combined, split.by = "Entity")
+#rm(Combined)
+```
+
+
+## Visualize predictions
+
+### Course
+
+```{r, fig.width = 3, fig.height = 9}
+matplot <- function(x, group, scale){
+  DotPlot(x, assay = "RNA", group.by = group,
+            features = rev(c("IGHD", "IGHM", "TCL1A", "SELL", "CD1C", "CXCR5", 
+                         "MME", "BCL6", "CCNB1", "AICDA", 
+                         "CAMK1", "CD72", "MS4A1", "PTPN6", 
+                         "SLA", "FCRL2", "CFLAR", "FOXP1",
+                         "CD83", "EBI3", "BTK", "BLK", "CD74", "BLNK", 
+                         "CD40", "NFKB1", "NFKB2", "TRAF1", "ICAM1", "REL", "RELB", "BACH2", 
+                         "CCR6", "GPR183", 
+                         "TNFRSF17","IRF4", "PRDM1", 
+                         "CD38","FAS", "IGHG1", "IGHA1", "IGHE", "CXCR3", 
+                         "IGLC2","IGKC")), dot.scale = scale,
+          cols = c("white", "darkgreen")) + 
+      RotatedAxis() + coord_flip() + ggtitle(x$Entity[1]) +
+    NoLegend()
+  ggsave(paste0("papers/Bcells/figures/ReferenceMapping/EntitiesmaturationDotPlot_course",x$Entity[1], "2.pdf"), width = 3, height = 9)
+}
+lapply(Entities, matplot, scale = 4, 
+        group = "predicted.Maturation_course")
+gc()
+```
+
+```{r, fig.height = 20, fig.width = 20}
+PlotAll <- function(x){
+DimPlot(x, group.by = "predicted.Maturation_course",
+       split.by = "PatientID",
+        cols = mathue3,
+       reduction = "ref.umap",
+       ncol = 5) +
+    coord_fixed() +
+    ggtitle(x$Entity[1]) +
+  labs(x = "UMAP 1", y = "UMAP 2")
+  ggsave(paste0("papers/Bcells/figures/ReferenceMapping/EntitiesmaturationDimPlot_course",x$Entity[1], "2.pdf"), width = 10, height = 7)
+}
+lapply(Entities, PlotAll)
+```
+
+### Fine
+```{r}
+# Default Assays: rLN = "integratedRNA", Entities = "integratedRNA"
+lapply(Entities, DimPlot, group.by = "predicted.Maturation_fine",
+       label = TRUE, repel = TRUE,
+        cols = mathue2,
+        label.box = TRUE, 
+        label.color = "white",
+        label.size = 3,
+       reduction = "ref.umap")
+```
+```{r, fig.width = 7, fig.height = 9}
+matplot <- function(x, group, scale){
+  DotPlot(x, assay = "RNA", group.by = group,
+            features = rev(c("IGHD", "IGHM", "TCL1A", "SELL", "CD1C", "CXCR5", 
+                         "MME", "BCL6", "CCNB1", "AICDA", 
+                         "CAMK1", "CD72", "MS4A1", "PTPN6", 
+                         "SLA", "FCRL2", "CFLAR", "FOXP1",
+                         "CD83", "EBI3", "BTK", "BLK", "CD74", "BLNK", 
+                         "CD40", "NFKB1", "NFKB2", "TRAF1", "ICAM1", "REL", "RELB", "BACH2", 
+                         "CCR6", "GPR183", 
+                         "TNFRSF17","IRF4", "PRDM1", 
+                         "CD38","FAS", "IGHG1", "IGHA1", "IGHE", "CXCR3", 
+                         "IGLC2","IGKC")), dot.scale = scale, cols = c("white", "darkgreen")) + 
+      RotatedAxis() + coord_flip() + ggtitle(x$Entity[1])
+  ggsave(paste0("papers/Bcells/figures/ReferenceMapping/EntitiesmaturationDotPlot_fine",x$Entity[1], "2.pdf"), width = 7, height = 9)
+}
+lapply(Entities, matplot, scale = 4, 
+        group = "predicted.Maturation_fine")
+```
+
+
+```{r}
+PlotKLR <- function(x){
+FeaturePlot(x, features = "KLR",
+       split.by = "PatientID",
+        cols = c("blue", "red"),
+       reduction = "ref.umap") +
+    patchwork::plot_layout(ncol = 5, nrow = 3) +
+    ggtitle(x$Entity[1])
+  ggsave(paste0("papers/Bcells/figures/ReferenceMapping/EntitiesKLRPlot",x$Entity[1], "2.pdf"), width = 20, height = 12)
+}
+lapply(Entities, PlotKLR)
+```
+
+
+# Extra Figures
+
+```{r, fig.height = 2, fig.width = 2}
+# generate unlabelled maturation UMAP
+DimPlot(Combined, reduction = "ref.umap",
+        group.by = "predicted.Maturation_course",
+        cols = mathue3) + coord_fixed() +
+  ggtitle("") +
+  NoLegend() +
+  labs(x = "UMAP 1", y = "UMAP 2")
+ggsave("papers/Bcells/figures/CelltypeMapping/CombinedUMAP_MaturationCourse_unlabelled.pdf")
+```
+
+```{r, fig.height = 3, fig.width = 3}
+# generate unlabelled maturation UMAP
+DimPlot(rLN, reduction = "umapRNA",
+        group.by = "predicted.Maturation.bulk",
+        cols = mathue3) + coord_fixed() +
+  ggtitle("Predicted Maturation States") +
+  NoLegend() +
+  labs(x = "UMAP 1", y = "UMAP 2")
+ggsave("papers/Bcells/figures/CelltypeMapping/rLN_MaturationPredicted.pdf")
+```
+
+```{r, fig.height = 3, fig.width = 3}
+# generate unlabelled maturation UMAP
+DimPlot(rLN, reduction = "umapRNA",
+        group.by = "Maturation_course",
+        cols = mathue3) + coord_fixed() +
+  ggtitle("Clustering Maturation States") +
+  NoLegend() +
+  labs(x = "UMAP 1", y = "UMAP 2")
+ggsave("papers/Bcells/figures/CelltypeMapping/rLN_MaturationCourse.pdf")
+```
+
+
+```{r, fig.height = 4, fig.width = 4}
+# generate labelled maturation UMAP
+DimPlot(rLN, reduction = "umapRNA",
+        group.by = "Maturation_course",
+        cols = mathue3,
+          label = TRUE, repel = TRUE,
+        label.box = TRUE, 
+        label.color = "white",
+        label.size = 4) + 
+  coord_fixed() +
+  ggtitle("Maturation States") +
+  NoLegend() +
+  labs(x = "UMAP 1", y = "UMAP 2")
+ggsave("papers/Bcells/figures/CelltypeMapping/rLN_MaturationCourse_labelled.pdf")
+```
+
+```{r, fig.width = 6, fig.height = 1.5}
+# Maturation state proportions in entities
+ggplot(Combined@meta.data, aes(x = Entity, fill = predicted.Maturation_course)) +
+  geom_bar(position = "fill") + 
+  ggtitle("") +
+  RotatedAxis() +
+  theme_minimal() +
+  theme(legend.position = "right", plot.title = element_text(hjust = 0.5), axis.title.x = element_text(hjust = 0.5), axis.text.x = element_text(size = 10)) +
+  scale_fill_manual(values = mathue3, name = "Maturation") +
+  ylab("Proportion")  +
+  xlab("Entity")
+ggsave("papers/Bcells/figures/ReferenceMapping/Entitymaturationbar.pdf")
+```
+
+
+# Isolated Malignant Cells
+
+See Malignant.Rmd for isolation of tumor cells in each tumor sample.
+
+```{r}
+Malignant <- readRDS("data/Objects/Malignant_withrLN.rds")
+```
+
+```{r}
+Malignant <- order(Malignant)
+Malignant$Entity <- factor(Malignant$Entity, 
+                      levels = c("rLN", "MCL", "FL", "DLBCL, GCB", "DLBCL, non-GCB", "MZL"))
+Malignant$predicted.Maturation.bulk <- factor(Malignant$predicted.Maturation.bulk, 
+                      levels = c("Naïve", "DZ", "LZ", "MD27", "IgG", "Plasma"))
+```
+
+```{r, fig.width = 15, fig.height = 3.5}
+# Fine
+DimPlot(Malignant, 
+        split.by = "Entity",  
+        group.by = "predicted.Maturation_fine",
+        pt.size = 0.5,
+        cols = mathue2,
+        reduction = "ref.umap",
+        ncol = 6) +
+  coord_fixed() +
+  ggtitle("Maturation States by Entity") +
+  labs(x = "UMAP 1", y = "UMAP 2")
+ggsave("papers/Bcells/figures/ReferenceMapping/MalignantEntitiesmaturationUMAP_fine.pdf", height = 8, width = 30)
+
+# Course
+DimPlot(Malignant, 
+        split.by = "Entity",  
+        group.by = "predicted.Maturation_course",
+        cols = mathue3,
+       reduction = "ref.umap",
+       ncol = 8,
+       pt.size = 0.5) +
+  coord_fixed() +
+  ggtitle("Maturation States by Entity")+
+  labs(x = "UMAP 1", y = "UMAP 2")
+ggsave("papers/Bcells/figures/ReferenceMapping/MalignantEntitiesmaturationUMAP_course.pdf")
+DimPlot(Malignant, 
+        split.by = "Entity",  
+        group.by = "predicted.Maturation.bulk",
+        cols = mathue3,
+       reduction = "ref.umap",
+       ncol = 8,
+       pt.size = 0.5) +
+  coord_fixed() +
+  ggtitle("Maturation States by Entity") +
+  labs(x = "UMAP 1", y = "UMAP 2")
+ggsave("papers/Bcells/figures/ReferenceMapping/MalignantEntitiesmaturationUMAP_bulk.pdf")
+```
+
+```{r, fig.width = 12, fig.height = 5}
+ggplot(Malignant@meta.data, aes(x = PatientID, fill = predicted.Maturation_course)) +
+  geom_bar(position = "fill") + 
+  ggtitle("Maturation State Proportions by Sample") +
+  RotatedAxis() +
+  theme_minimal() +
+  theme(legend.position = "right", plot.title = element_text(hjust = 0.5), axis.title.x = element_text(hjust = 0.5), axis.text.x = element_text(angle=45, size = 7)) +
+  scale_fill_manual(values = mathue3, name = "Maturation") +
+  ylab("Proportion") +
+  xlab("Sample") +
+  facet_grid(cols = vars(Entity), scales = "free_x", space = "free_x") +
+  RotatedAxis()
+ggsave("papers/Bcells/figures/ReferenceMapping/MalignantSamplesmaturationbar.pdf", width = 12, height = 5)
+```
+```{r, fig.width = 2, fig.height = 2.5}
+ggplot(Malignant@meta.data, aes(x = PatientID, fill = predicted.Maturation_course)) +
+  geom_bar(position = "fill") + 
+  ggtitle("Maturation State Proportions by Sample") +
+  theme_minimal() +
+  theme(axis.text.x=element_blank()) +
+  scale_fill_manual(values = mathue3, name = "Maturation") +
+  ylab("Proportion") +
+  RotatedAxis() +
+  NoLegend() +
+  xlab("Sample")
+ggsave("papers/Bcells/figures/ReferenceMapping/MalignantSamplesmaturationbar_small.pdf")
+```
+
+```{r, fig.width = 10, fig.height = 2.5}
+ggplot(Malignant@meta.data, aes(x = Entity, fill = predicted.Maturation_course)) +
+  geom_bar(position = "fill") + 
+  ggtitle("") +
+  RotatedAxis() +
+  theme_minimal() +
+  theme(legend.position = "right") +
+  scale_fill_manual(values = mathue3, name = "Maturation") +
+  ylab("Proportion") +
+  xlab("Entity")
+ggsave("papers/Bcells/figures/ReferenceMapping/MalignantEntitiesmaturationbar.pdf", width = 10, height = 2.5)
+```
+
+```{r, fig.width = 10, fig.height = 5}
+# Show only comparisons with significance
+sigFunc = function(x){
+  if(x < 0.001){"***"} 
+  else if(x < 0.01){"**"}
+  else if(x < 0.05){"*"}
+  else{NA}}
+# Boxplot distribution of predicted maturation states within each sample grouped by entity
+# Calculate the proportions of each maturation state in each sample, and create a data frame for each maturation state.
+MatProp <- table(Patient = Malignant$PatientID, Entity = Malignant$Entity, Maturation = Malignant$predicted.Maturation_course) %>% prop.table(margin = 1) %>% as.data.frame() %>% filter(Freq != 0)
+library(ggsignif)
+ggplot(MatProp, aes(x = Entity, y = Freq)) +
+  geom_boxplot(aes(col = Entity)) + 
+  ggbeeswarm::geom_beeswarm(aes(color = Entity), cex = 2, show.legend = FALSE) +
+  geom_signif(comparisons = list(c("rLN", "MCL"),
+                                 c("rLN", "FL"),
+                                 c("rLN", "DLBCL, GCB"),
+                                 c("rLN", "DLBCL, non-GCB"),
+                                 c("rLN", "MZL")),
+              test = "wilcox.test", textsize = 3, map_signif_level = sigFunc, 
+              step_increase = 0.05, show.legend = TRUE, vjust = 0.4) +
+  ggtitle(paste0("Maturation State Proportions by Entity")) +
+  theme_bw() +
+  RotatedAxis() +
+  ylab("Maturation State Proportion") +
+  theme(axis.title.x=element_blank(),
+        legend.position = "none") +
+  facet_grid(cols = vars(Maturation)) +
+  theme(strip.background =element_rect(fill="black")) +
+  theme(strip.text = element_text(colour = 'white')) +
+  theme(plot.title = element_text(hjust = 0.5))
+ggsave("papers/Bcells/figures/ReferenceMapping/MalignantBoxPlotFrequency_rLNvsAll.pdf")
+```
+
+

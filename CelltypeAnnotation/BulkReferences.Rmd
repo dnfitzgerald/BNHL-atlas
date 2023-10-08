@@ -1,0 +1,880 @@
+---
+title: "Analysis of bulk RNA-seq reference datasets from peripheral blood, bone marrow and tonsil"
+author: "Donnacha Fitzgerald"
+date: "25/01/2022"
+output: html_document
+---
+
+This script serves to use RNA-seq data from sorted nodal B-cell maturation states to map maturation states in the reactive lymph node (rLN) CITE-Seq data as a validation against the cluster-based annotations (see rLN.Rmd).
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+figpath <- "papers/Bcells/figures/CelltypeMapping/BulkReference/"
+```
+
+# Load packages and data
+
+```{r, results = 'hide'}
+library(workflowr)
+library(DESeq2)
+library("readxl")
+library(xlsx)
+library(ggsignif)
+library(Seurat)
+library(tidyverse)
+library(tibble)
+library(nestedcv)
+```
+```{r}
+# Set color palette for maturation states
+mathue1 <- c("#043db0", # Naive
+                 "#952ba6", # DZ
+                 "#d71488", # LZ
+                 "#fc3861", # MD27
+                 "#ff6e38", # IgG
+                 "#e29400") # Plasma
+mathue2 <- c("#043db0", # Naive
+                 "#032b7d",
+                 "#952ba6", # DZ
+                 "#d71488", # LZ
+                 "#890a56", 
+                 "#fc3861", # MD27
+                 "#dd2954",
+                 "#c12347",
+                 "#9b1e39",
+                 "#ff6e38", # IgG
+                 "#df592d",
+                 "#c04c25",
+                 "#9c3e1d",
+                 "#e29400") # Plasma
+mathue3 <- c("#00293c",
+             "#4f5998",
+             "#a159a2",
+             "#e75688",
+             "#ff7156",
+             "#cbc700")
+mathue4 <- c("#00293c",
+             "#4f5998",
+             "#a159a2",
+             "#e75688",
+             "#ff7156",
+             "#FFD104")
+```
+# Load and Format Data
+```{r}
+# load count data (LN and Tonsil) as data frame
+samples <- read_delim("data/BulkRNA_Reference/lymphnode_RNAseq.csv", 
+                      delim = ";", escape_double = FALSE, trim_ws = TRUE) %>% 
+  column_to_rownames(var = "...1")
+```
+
+```{r, include=FALSE, eval = FALSE}
+# Obtain metadata from column names
+meta <- str_split(colnames(samples), pattern = c("_")) %>% 
+  as.data.frame(fill = TRUE) %>% t()
+write.xlsx2(meta, file = "data/BulkRNA_Reference/meta.xlsx")
+```
+
+```{r}
+# Load metadata
+meta <- read.xlsx("data/BulkRNA_Reference/meta.xlsx", 
+                  header = TRUE, sheetName = "meta")
+rownames(meta) <- meta$NA.
+# remove rownames column
+meta$NA. <- NULL
+# Set variables to factors
+meta[] <- lapply(meta, factor)
+```
+
+```{r}
+# Visualize sample distribution
+base::table(meta$State, meta$Source)
+base::table(meta$State, meta$Sample)
+ggplot(meta, aes(x=State, fill = Source)) +
+  geom_bar(position = "stack") + 
+  theme_bw() + 
+  theme(axis.text.x = element_text(angle = 30, vjust = 1, hjust=1))
+ggsave(paste0(figpath, "samples2.pdf"), width = 5, height = 5)
+```
+All maturation states were identified in each sample (except plasma cells which are missing in 2 lymph nodes)
+
+# Run DESeq2
+
+```{r}
+rownames(meta) <- colnames(samples)
+# Create DESeq2 object with B cell subtype as the condition
+dds <- DESeqDataSetFromMatrix(countData = samples,
+                              colData = meta,
+                              design = ~ 0 + State)
+dds
+```
+
+```{r}
+## Pre-filtering to remove genes with low counts
+keep <- rowSums(counts(dds)) >= 10
+dds <- dds[keep,]
+```
+
+```{r}
+# Initially run on all subtypes
+dds <- DESeq(dds)
+#saveRDS(dds, file = "output/Bcells/CelltypeMapping/BulkReference/LNdds2.rds")
+```
+
+# Quality Assessment
+
+## VST
+
+```{r}
+#Variance stabilization transformation of the raw data
+vst <- vst(dds, blind=F)
+```
+
+```{r}
+library(vsn)
+meanSdPlot(assay(dds)) # plot without VST
+meanSdPlot(assay(vst)) # plot with vst
+```
+
+## Heatmap
+
+```{r, fig.height = 8, fig.width = 9}
+library("pheatmap")
+select <- order(rowVars(counts(dds,normalized=TRUE)),
+                decreasing=TRUE)[1:50]
+table <- assay(vst)[select,]
+df <- as.data.frame(colData(dds)[,c("Sample","Source","State")])
+# Add gene symbols
+library( "biomaRt" )
+ensembl = useMart( "ensembl", dataset = "hsapiens_gene_ensembl" )
+genemap <- getBM(attributes = c("ensembl_gene_id", "entrezgene_description", "hgnc_symbol"),
+filters = "ensembl_gene_id",
+values = rownames(table),
+mart = ensembl )
+idx <- match( rownames(table), genemap$ensembl_gene_id )
+rownames(table) <- genemap$hgnc_symbol[ idx ]
+pheatmap(table, cluster_rows=FALSE, show_rownames=TRUE, show_colnames = FALSE,
+         cluster_cols=TRUE, annotation_col=df, legend = TRUE, annotation_legend = TRUE)
+```
+
+The most variable genes are mitochondrial (stress) and immunoglobulins.
+
+Columns group partially by state, sample of origin and tissue source.
+
+## Sample Distances
+```{r}
+sampleDists <- dist(t(assay(vst)))
+```
+
+```{r}
+library("RColorBrewer")
+sampleDistMatrix <- as.matrix(sampleDists)
+rownames(sampleDistMatrix) <- paste(vst$Source, vst$Sample, vst$State, sep="-")
+colnames(sampleDistMatrix) <- NULL
+colors <- colorRampPalette( rev(brewer.pal(9, "Blues")) )(255)
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows=sampleDists,
+         clustering_distance_cols=sampleDists,
+         col=colors)
+```
+
+
+## PCA
+```{r}
+vst$State <- factor(vst$State, 
+                      levels = c("Naïve", "DZ", "LZ", "MD27", "IgG", "Plasma"))
+plotPCA(vst, intgroup=c("State")) + 
+  scale_color_manual(values=mathue4) +
+  theme_bw() +
+  ggtitle("Sorted Maturation States RNA-Seq PCA") +
+  coord_fixed()
+ggsave(paste0(figpath, "StatesPCA.pdf"))
+```
+```{r}
+plotPCA(vst, intgroup=c("Source")) + theme_bw()
+```
+```{r}
+plotPCA(vst, intgroup=c("Sample")) + theme_bw()
+```
+
+Observations primarily group by state.
+
+# Differential Expression Analysis
+
+```{r}
+res <- results(dds)
+res
+resultsNames(dds)
+```
+
+### Add gene names
+Convert Ensemble IDs to gene symbols for ease of interpretation.
+```{r}
+genes <- function(x){
+  # First, we split up the rownames of the results object, which contain ENSEMBL gene ids, separated by the plus sign, +. The following code then takes the first id for each gene by invoking the open square bracket function "[" and the argument, 1.
+  x$ensembl <- sapply( strsplit(rownames(x), split="\\+" ), "[", 1 )
+  library( "biomaRt" )
+  ensembl <- useEnsembl(biomart = "ensembl", 
+                   dataset = "hsapiens_gene_ensembl", 
+                   mirror = "useast")
+  genemap <- getBM( attributes = c("ensembl_gene_id", "entrezgene_description", "hgnc_symbol"),
+  filters = "ensembl_gene_id",
+  values = x$ensembl,
+  mart = ensembl )
+  idx <- match( x$ensembl, genemap$ensembl_gene_id )
+  x$entrez <- genemap$entrezgene_description[ idx ]
+  x$hgnc_symbol <- genemap$hgnc_symbol[ idx ]
+  return(x)
+}
+```
+
+### Visualize most differentially expressed genes
+```{r, fig.width = 5, fig.height = 5}
+DEplot <- function(x, title){
+  xSig <- x[ which(x$padj < 0.05 ), ]
+  # Remove genes lacking symbol and duplicates
+  xSig <- xSig[!is.na(xSig$hgnc_symbol),]
+  xSig <- xSig[!duplicated(xSig$hgnc_symbol),]
+  # Select 30 genes with lowest adjusted p-values
+  df <- as.data.frame(xSig) %>% arrange(-log2FoldChange)
+  top30_after <- df[1:30,]
+  ggplot(top30_after, aes(x = reorder(hgnc_symbol, log2FoldChange), y = log2FoldChange, fill = padj)) +
+          geom_col() + coord_flip() + theme_minimal() + ggtitle(title) + 
+    labs(x= "gene", y = "log2 fold change")
+}
+```
+
+
+```{r}
+resultsNames(dds)
+```
+
+## DZ vs all
+```{r, fig.width = 5, fig.height = 5}
+DZres <- results(dds, name = "StateDZ")
+DZres <- genes(DZres)
+DEplot(DZres, title = "DZ")
+```
+
+Most differentially expressed genes in DZ B cells are mitochondrial in origin, indicating stress.
+
+## LZ vs all
+```{r, fig.width = 5, fig.height = 5}
+LZres <- results(dds, name="StateLZ")
+LZres <- genes(LZres)
+DEplot(LZres, title = "LZ")
+```
+
+LZ B cells are also mostly mitochondrial in origin, indicating stress.
+
+## Naive vs all
+```{r, fig.width = 5, fig.height = 5}
+Naiveres <- results(dds, name="StateNaïve")
+Naiveres <- genes(Naiveres)
+DEplot(Naiveres, title = "Naive")
+```
+
+Mitochondrial.
+
+## Plasma cells vs all
+```{r, fig.width = 5, fig.height = 5}
+Plasmares <- results(dds, name="StatePlasma")
+Plasmares <- genes(Plasmares)
+DEplot(Plasmares, title = "Plasma Cells")
+```
+
+Immunoglobulins and mitochondrial genes dominate.
+
+# Heatmap of Most Variable Markers
+```{r, eval = FALSE, include = FALSE}
+# Add gene symbols
+library( "biomaRt" )
+ensembl = useMart( "ensembl", dataset = "hsapiens_gene_ensembl" )
+genemap <- getBM(attributes = c("ensembl_gene_id", "entrezgene_description", "hgnc_symbol"),
+filters = "ensembl_gene_id",
+values = rownames(samples),
+mart = ensembl )
+idx <- match( rownames(samples), genemap$ensembl_gene_id )
+  idx <- idx[!is.na(idx['hgnc_symbol'])]
+  idx <- idx[!duplicated(idx['hgnc_symbol'])]
+rownames(samples) <- genemap$hgnc_symbol[idx]
+```
+
+```{r}
+# Add gene symbols
+samples <- genes(samples)
+# Remove genes without symbols or duplicates
+filtered <- subset(samples, hgnc_symbol != "")
+filtered <- subset(filtered,  duplicated(filtered$hgnc_symbol) == FALSE)
+rownames(filtered) <- filtered$hgnc_symbol
+# remove gene annotation columns
+filtered <- filtered[, 1:40]
+```
+
+```{r}
+# Create Seurat object of reference data set
+library(Seurat)
+library(patchwork)
+ref <- CreateSeuratObject(counts=filtered, meta.data = as.data.frame(vst@colData@listData))
+```
+
+```{r}
+# Normalize and Scale Data
+ref <- NormalizeData(ref) %>% ScaleData()
+```
+
+```{r}
+# DE analysis
+Idents(ref) <- "State"
+markers <- FindAllMarkers(ref, test.use = "DESeq2")
+auc <- FindAllMarkers(ref, test.use = "roc")
+```
+
+```{r}
+markers %>%
+    group_by(cluster) %>%
+    slice_max(n = 10, order_by = desc(p_val_adj))
+```
+
+```{r}
+auc %>%
+    group_by(cluster) %>%
+    slice_max(n = 10, order_by = desc(power))
+```
+
+DE analysis here reveals different markers to what we expect to see (and typically see in single cell analysis)
+
+```{r, fig.width=5, fig.height = 5}
+# Plot heatmap based on DESeq2 results
+markers %>%
+    group_by(cluster) %>%
+    top_n(n = 5, wt = avg_log2FC) -> top5
+DoHeatmap(ref, features = top5$gene, raster = FALSE, group.colors = mathue4,
+          size = 4) + 
+  scale_fill_gradientn(colors = c("blue", "white", "red"))
+ggsave(paste0(figpath, "heatmap.pdf"))
+```
+
+```{r, fig.width=8, fig.height = 7.5}
+# Plot heatmap based on DESeq2 results
+auc %>%
+    group_by(cluster) %>%
+  slice_max(n = 10, order_by = myAUC, with_ties = FALSE) -> auctop5
+DoHeatmap(ref, features = auctop5$gene, raster = FALSE, group.colors = mathue4,
+          size = 3.5) + 
+  scale_fill_gradientn(colors = c("blue", "white", "red"))
+ggsave(paste0(figpath, "aucheatmap.pdf"))
+```
+```{r, fig.width = 7, fig.height = 9}
+matplot <- function(x, group, scale){
+  DotPlot(x, assay = "RNA", group.by = group,
+            features = rev(c("IGHD", "IGHM", "TCL1A", "SELL", "CD1C", "CXCR5", 
+                         "MME", "BCL6", "CCNB1", "AICDA", 
+                         "CAMK1", "CD72", "MS4A1", "PTPN6", 
+                         "SLA", "FCRL2", "CFLAR", "FOXP1",
+                         "CD83", "EBI3", "BTK", "BLK", "CD74", "BLNK", 
+                         "CD40", "NFKB1", "NFKB2", "TRAF1", "ICAM1", "REL", "RELB", "BACH2", 
+                         "CCR6", "GPR183", 
+                         "TNFRSF17","IRF4", "PRDM1", 
+                         "CD38","FAS", "IGHG1", "IGHA1", "IGHE", "CXCR3", 
+                         "IGLC2","IGKC")), dot.scale = scale, cols = c("white", "darkgreen")) + 
+      RotatedAxis() + coord_flip()
+}
+matplot(ref, scale = 4, 
+        group = "State")
+```
+
+
+
+```{r, fig.width=7, fig.height = 5}
+auc %>%
+    group_by(cluster) %>%
+  slice_max(n = 10, order_by = myAUC, with_ties = FALSE) -> auctop10
+ggplot(top10, aes(x=gene, y = myAUC, fill = cluster)) +
+  geom_col(position = "dodge") + 
+  theme_bw() + 
+  theme(axis.text.x = element_text(angle = 30, vjust = 1, hjust=1)) +
+  facet_grid(rows = vars(cluster))
+```
+Very high AUC is observed for several features for each class, but bare in mind that this is not representative of 
+
+# Alignment with CITE-Seq Populations
+
+```{r}
+Combined <- readRDS("data/Objects/Combined_B_cleaned.rds")
+rLN <- readRDS("data/SeuratObjects_Int/Entity/rLN/rLN.rds")
+```
+
+## Reactive Lymph Node Samples
+```{r, fig.width=10, fig.height = 10}
+rLN <- FindVariableFeatures(rLN, assay = "RNA") %>% ScaleData(assay = "RNA", features = top10$gene)
+# Many missing features in integrated assay as only most variable genes included. therefor unintegrated data is used instead
+DoHeatmap(rLN, features = top10$gene, raster = FALSE, assay = "RNA", slot = "scale.data")
+```
+Except for centroblasts, low alignment of markers is observed with single cell reference dataset - sparsity. This indicates the most variable features in the CITE-Seq data must be pre-filtered for training.
+
+```{r, fig.width=10, fig.height=10}
+DoHeatmap(rLN, features =VariableFeatures(rLN)[1:100], raster = TRUE)
+```
+
+## All Samples
+```{r}
+Idents(Combined) <- "Maturation_M"
+downsampled <- subset(Combined, downsample = 1000)
+downsampled <- ScaleData(downsampled, assay = "RNA")
+```
+
+```{r, fig.width=7, fig.height = 7}
+DoHeatmap(downsampled, features = auctop10$gene, raster = FALSE, assay = "integratedRNA", slot = "scale.data")
+```
+Low marker correspondance with the malignant dataset too (except for the ABC cluster, which is likely centroblasts)
+
+# Classification Approaches
+```{r}
+library(caret)
+library(questionr)
+```
+
+
+## Train on bulk dataset
+
+A nested cross-validation approach is adopted due to the small number of observations.
+
+```{r}
+# filter for variable features in rLN dataset. Scale inputs
+genes <- VariableFeatures(rLN, assay = "RNA")[VariableFeatures(rLN, assay = "RNA") %in% rownames(filtered)]
+input <- filtered[genes,] %>% as.matrix() %>% t() %>% scale()
+# set NAs to 0
+input[is.na(input)] <- 0
+output <- meta$State %>% as.factor()
+```
+
+```{r}
+# set to 5 folds and grid hyperparameter search
+trControl <- trainControl(number = 5, search = "grid")
+```
+
+Test ML models for classification of maturation states based on gene expression:
+
+### glmnet
+
+Logistic Regression
+
+```{r, results='hide'}
+library(nestedcv)
+set.seed(23)
+glmnet <- nestcv.train(output,
+                        input,
+                        trControl = trControl,
+                        method = "glmnet",
+                        tuneList = NULL,
+                        continue_on_fail = TRUE,
+                        importance = TRUE,
+                        allowParallel = FALSE,
+                        metric = "Balanced accuracy",
+                        nthread = 1)
+#saveRDS(glmnet, file = "output/Bcells/CelltypeClassification/Refglmnet.rds")
+```
+
+```{r}
+glmnet$summary
+```
+
+Very high balanced accuracy is achieved, indicating good performance across all classes.
+
+```{r}
+# Extract coefficients of final fitted model
+coeff <- glmnet_coefs(glmnet$final_fit$finalModel, s = glmnet$finalTune$lambda)
+coeff_plot <- function(x, title){
+  x <- as.data.frame(x)
+  names(x) <- "subpop"
+  plot <- ggplot(x, aes(x = rownames(x), y = subpop, fill = rownames(x))) +
+    geom_col() +
+    theme_bw() + 
+    RotatedAxis() +
+    NoLegend() +
+    ggtitle(title)
+  print(plot)
+}
+coeff_plot(coeff$DZ, title = "DZ")
+coeff_plot(coeff$LZ, title = "LZ")
+coeff_plot(coeff$MD27, title = "MD27")
+coeff_plot(coeff$IgG, title = "IgG")
+coeff_plot(coeff$Naïve, title = "Naive")
+coeff_plot(coeff$Plasma, title = "Plasma")
+```
+### rf
+
+Random Forest
+
+```{r, results='hide'}
+library(nestedcv)
+set.seed(23)
+rf <- nestcv.train(output,
+                        input,
+                        trControl = trControl,
+                        method = "rf",
+                        tuneList = NULL,
+                        continue_on_fail = TRUE,
+                        importance = TRUE,
+                        allowParallel = FALSE,
+                        metric = "Balanced accuracy",
+                        nthread = 1)
+#saveRDS(rf, file = "output/Bcells/CelltypeClassification/Ref_rf.rds")
+```
+
+```{r}
+rf$summary
+```
+
+rf achieved perfect accuracy.
+
+## Predict
+
+Apply models to predict maturation states of the rLN single-cell dataset.
+
+```{r}
+# use normalized and scaled counts for prediction
+test <- rLN@assays$RNA@scale.data[genes,] %>% as.matrix() %>% t()
+```
+
+### glmnet
+```{r}
+set.seed(23)
+glmnet_test <- predict(glmnet, newdata = test, verbose = TRUE)
+rLN$predicted.Maturation.bulk <- glmnet_test
+DimPlot(rLN, group.by = "predicted.Maturation.bulk") + coord_fixed()
+DimPlot(rLN, group.by = 'Maturation') + coord_fixed()
+```
+Moderate correspondence between assigned and predicted maturation is observed, although due to a lack of the pre-GC MZB class in the prediction, these cells are all assigned to IgG or IgM/D memory. Additionally, the CB class is split in DZ and LZ and CC is assigned to IgM/D memory, contrary to expectation.
+
+Visualize Maturation Markers
+
+```{r, fig.height=10, fig.width = 5}
+DotPlot(rLN, group.by = "predicted.Maturation.bulk", assay = "RNA", 
+            features = c("IGHD", "IGHM", "TCL1A", "SELL", "CD1C", "CXCR5", 
+                         "MME", "BCL6", "CCNB1", "AICDA", 
+                         "CAMK1","IRKCB", "CD72", "MS4A1", "PTPN6", 
+                         "SLA", "FCRL2", "CFLAR", "FOXP1",
+                         "CD83", "EBI3", "BTK", "BLK", "CD74", "BLNK", 
+                         "CD40", "NFKB1", "NFKB2", "TRAF1", "ICAM1", "REL", "RELB", "BACH2", 
+                         "CCR6", "GPR183", 
+                         "TNFRSF17","IRF4", "XPB1", "PRDM1", 
+                         "CD38","FAS", "IGHG1", "IGHA1", "IGHE", "CXCR3", 
+                         "IGLC2","IGKC"), 
+            cols = c("blue", "red")) + 
+      RotatedAxis() + coord_flip() + ggtitle("RNA Maturation Marker Profile")
+
+DotPlot(rLN, group.by = "predicted.Maturation.bulk", assay = "ADT", 
+            features = c(".CD62L", ".CD185", ".CD10", ".CD20", ".CD38", 
+                         ".CD95", ".CD183"), 
+            cols = c("blue", "red")) + 
+      RotatedAxis() + coord_flip() + ggtitle("ADT Maturation Marker Profile")
+```
+Marker profiles correspond reasonably well, although there are some anomalies (CD10)
+
+### rf
+```{r}
+set.seed(23)
+rf_test <- predict(rf, newdata = test, verbose = TRUE)
+rLN$predicted.Maturation.bulk <- rf_test
+DimPlot(rLN, group.by = "predicted.Maturation.bulk") + coord_fixed()
+DimPlot(rLN, group.by = 'Maturation') + coord_fixed()
+```
+Random forest in this case fails to identify naive B cells.
+
+Visualize Maturation Markers
+
+```{r, fig.height=10, fig.width = 5}
+DotPlot(rLN, group.by = "predicted.Maturation.bulk", assay = "RNA", 
+            features = c("IGHD", "IGHM", "TCL1A", "SELL", "CD1C", "CXCR5", 
+                         "MME", "BCL6", "CCNB1", "AICDA", 
+                         "CAMK1","IRKCB", "CD72", "MS4A1", "PTPN6", 
+                         "SLA", "FCRL2", "CFLAR", "FOXP1",
+                         "CD83", "EBI3", "BTK", "BLK", "CD74", "BLNK", 
+                         "CD40", "NFKB1", "NFKB2", "TRAF1", "ICAM1", "REL", "RELB", "BACH2", 
+                         "CCR6", "GPR183", 
+                         "TNFRSF17","IRF4", "XPB1", "PRDM1", 
+                         "CD38","FAS", "IGHG1", "IGHA1", "IGHE", "CXCR3", 
+                         "IGLC2","IGKC"), 
+            cols = c("blue", "red")) + 
+      RotatedAxis() + coord_flip() + ggtitle("RNA Maturation Marker Profile")
+
+DotPlot(rLN, group.by = "predicted.Maturation.bulk", assay = "ADT", 
+            features = c(".CD62L", ".CD185", ".CD10", ".CD20", ".CD38", 
+                         ".CD95", ".CD183"), 
+            cols = c("blue", "red")) + 
+      RotatedAxis() + coord_flip() + ggtitle("ADT Maturation Marker Profile")
+```
+Marker profiles look alright, although Naive B cells are missing.
+
+```{r}
+# set glmnet as the default prediction
+rLN$predicted.Maturation.bulk <- glmnet_test
+#saveRDS(rLN, "data/SeuratObjects_Int/Entity/rLN/rLN.rds")
+rm(rLN, downsampled)
+gc()
+```
+
+# Classify all B cells (including tumour cells)
+
+```{r}
+# use normalized and scaled counts for prediction (from the same genes used in the rLN data above)
+test <- Combined@assays$RNA@data[genes,] %>% as.matrix() %>% t() %>% scale()
+```
+
+### glmnet
+```{r}
+set.seed(23)
+glmnet_test <- predict(glmnet, newdata = test, verbose = TRUE)
+Combined$predicted.Maturation.bulk <- glmnet_test
+DimPlot(Combined, group.by = "predicted.Maturation.bulk") + coord_fixed()
+DimPlot(Combined, group.by = 'Maturation_M') + coord_fixed()
+```
+Prediction works well on full dataset.
+
+Visualize Maturation Markers
+
+```{r, fig.height=5, fig.width = 3}
+DotPlot(Combined, group.by = "predicted.Maturation.bulk", assay = "RNA", 
+            features = c("IGHD", "IGHM", "TCL1A", "SELL", "CD1C", "CXCR5", 
+                         "MME", "BCL6", "CCNB1", "AICDA", 
+                         "CAMK1","IRKCB", "CD72", "MS4A1", "PTPN6", 
+                         "SLA", "FCRL2", "CFLAR", "FOXP1",
+                         "CD83", "EBI3", "BTK", "BLK", "CD74", "BLNK", 
+                         "CD40", "NFKB1", "NFKB2", "TRAF1", "ICAM1", "REL", "RELB", "BACH2", 
+                         "CCR6", "GPR183", 
+                         "TNFRSF17","IRF4", "XPB1", "PRDM1", 
+                         "CD38","FAS", "IGHG1", "IGHA1", "IGHE", "CXCR3", 
+                         "IGLC2","IGKC"), 
+            cols = c("blue", "red")) + 
+      RotatedAxis() + coord_flip() + ggtitle("RNA Maturation Marker Profile")
+
+DotPlot(Combined, group.by = "predicted.Maturation.bulk", assay = "ADT", 
+            features = c(".CD62L", ".CD185", ".CD10", ".CD20", ".CD38", 
+                         ".CD95", ".CD183"), 
+            cols = c("blue", "red")) + 
+      RotatedAxis() + coord_flip() + ggtitle("ADT Maturation Marker Profile")
+```
+
+Marker profiles also correspond well.
+
+Plot maturation state distribution in entities:
+
+```{r}
+DimPlot(Combined, group.by = "Entity") + coord_fixed()
+# Visualize maturation state distribution
+ggplot(Combined@meta.data, aes(x=Entity, fill = predicted.Maturation.bulk)) +
+  geom_bar(position = "fill") + 
+  theme_bw() + 
+  theme(axis.text.x = element_text(angle = 30, vjust = 1, hjust=1))
+```
+
+
+### rf
+```{r}
+set.seed(23)
+rf_test <- predict(rf, newdata = test, verbose = TRUE)
+Combined$predicted.Maturation.bulk <- rf_test
+DimPlot(Combined, group.by = "predicted.Maturation.bulk") + coord_fixed()
+DimPlot(Combined, group.by = 'Maturation_M') + coord_fixed()
+```
+Random forest fails to identify naive cells.
+
+Visualize Maturation Markers
+
+```{r, fig.height=6, fig.width = 3}
+DotPlot(Combined, group.by = "predicted.Maturation.bulk", assay = "RNA", 
+            features = c("IGHD", "IGHM", "TCL1A", "SELL", "CD1C", "CXCR5", 
+                         "MME", "BCL6", "CCNB1", "AICDA", 
+                         "CAMK1","IRKCB", "CD72", "MS4A1", "PTPN6", 
+                         "SLA", "FCRL2", "CFLAR", "FOXP1",
+                         "CD83", "EBI3", "BTK", "BLK", "CD74", "BLNK", 
+                         "CD40", "NFKB1", "NFKB2", "TRAF1", "ICAM1", "REL", "RELB", "BACH2", 
+                         "CCR6", "GPR183", 
+                         "TNFRSF17","IRF4", "XPB1", "PRDM1", 
+                         "CD38","FAS", "IGHG1", "IGHA1", "IGHE", "CXCR3", 
+                         "IGLC2","IGKC"), 
+            cols = c("blue", "red")) + 
+      RotatedAxis() + coord_flip() + ggtitle("RNA Maturation Marker Profile")
+
+DotPlot(Combined, group.by = "predicted.Maturation.bulk", assay = "ADT", 
+            features = c(".CD62L", ".CD185", ".CD10", ".CD20", ".CD38", 
+                         ".CD95", ".CD183"), 
+            cols = c("blue", "red")) + 
+      RotatedAxis() + coord_flip() + ggtitle("ADT Maturation Marker Profile")
+```
+
+Maturation markers correspond well with assigned states, although all naive cells are considered MD27.
+Therefor, glmnet resuts are used instead.
+
+```{r}
+Combined$predicted.Maturation.bulk <- glmnet_test
+#saveRDS(Combined, file = "data/Objects/Combined_B_cleaned.rds")
+rm(Combined)
+```
+
+## Classify individual samples
+
+```{r}
+gc()
+# Load list of 51 samples
+Samples <- readRDS(file = "data/Objects/List_B.rds")
+```
+
+### glmnet
+```{r, eval = FALSE}
+library(glmnet)
+classify <- function(x){
+  # use normalized and scaled counts for prediction (from the same genes used in the rLN data above)
+  test <- x@assays$RNA@data[genes,] %>% as.matrix() %>% t() %>% scale() %>% na.replace()
+  set.seed(23)
+  # use trained logistic regression model
+  glmnet_test <- predict(glmnet, newdata = test, verbose = TRUE)
+  x$predicted.Maturation.bulk <- glmnet_test
+  return(x)
+}
+Samples <- lapply(Samples, classify)
+MatPlot <- function(x){
+  x$predicted.Maturation.bulk <- as.factor(x$predicted.Maturation.bulk)
+  plot1 <- DimPlot(x, group.by = "predicted.Maturation.bulk") + coord_fixed() 
+  plot2 <- DimPlot(x, group.by = 'predicted.Maturation') + coord_fixed()
+  plot1+plot2
+}
+lapply(Samples, MatPlot)
+```
+Prediction failed - perhaps due to absence of several maturation states in some samples leading to inadequate distinguishing markers on scaled data.
+
+```{r, eval = FALSE}
+saveRDS(Samples, file = "data/Objects/List_B.rds")
+rm(Samples)
+```
+
+Instead, we can try viewing the predicted maturation states from the Combined samples object for each individual sample.
+
+```{r, fig.width=12, fig.height=6}
+# Plot distribution of predicted maturation states within each sample
+ggplot(Combined@meta.data) +
+geom_bar(position = "fill", aes(x = PatientID, fill = predicted.Maturation.bulk)) +
+  ggtitle("Predicted Maturation States for each Sample") +
+  RotatedAxis() +
+  facet_grid(cols = vars(Entity), scales = "free")
+ggsave(paste0(figpath, "SampleBarchart.pdf"))
+```
+
+```{r}
+# Plot distribution of predicted maturation states within each entity
+ggplot(Combined@meta.data) +
+geom_bar(position = "fill", aes(x = Entity, fill = predicted.Maturation.bulk)) +
+  ggtitle("Predicted Maturation States for each Entity") +
+  RotatedAxis()
+```
+```{r}
+# Plot distribution of predicted maturation states within each entity
+ggplot(Combined@meta.data) +
+geom_bar(position = "dodge", aes(x = Entity, fill = predicted.Maturation.bulk)) +
+  ggtitle("Predicted Maturation States for each Entity") +
+  RotatedAxis() +
+  geom_boxplot(aes(x = PatientID, fill = predicted.Maturation.bulk))
+```
+```{r}
+# Plot distribution of predicted maturation states within each entity
+ggplot(Combined@meta.data) +
+geom_boxplot(aes(x = Entity, fill = predicted.Maturation.bulk)) +
+  ggtitle("Predicted Maturation States for each Entity") +
+  RotatedAxis()
+```
+
+
+```{r}
+# Calculate the proportions of each maturation state in each sample, and create a data frame for each maturation state.
+MatProp <- table(Patient = Combined$PatientID, Entity = Combined$Entity, Maturation = Combined$predicted.Maturation.bulk) %>% prop.table(margin = 1) %>% as.data.frame() %>% filter(Freq != 0)
+MatProp <- split(MatProp, MatProp$Maturation)
+# Add summary statistics
+# library(Rmisc)
+# MatProp <- lapply(MatProp, summarySE, measurevar="Freq", groupvars=c("Entity"))
+# Boxplot distribution of predicted maturation states within each sample grouped by entity
+Box <- function(df){
+  df <- filter(df, Freq != 0)
+  ggplot(df, aes(x = Entity, y = Freq)) +
+    geom_boxplot(aes(col = Entity)) + 
+    ggbeeswarm::geom_beeswarm(aes(color = Entity), cex = 2, show.legend = FALSE) +
+    ggtitle(paste0("Predicted ", df$Maturation[1], " Proportion for each Sample by Entity")) +
+    theme_classic() +
+    RotatedAxis()
+  ggsave(paste0(figpath, df$Maturation[1], "boxplot.pdf"))
+}
+lapply(MatProp, Box)
+```
+```{r}
+Box <- function(df){
+  df <- filter(df, Freq != 0)
+  ggplot(df, aes(x = Entity, y = Freq)) +
+    geom_boxplot(aes(col = Entity)) + 
+    ggbeeswarm::geom_beeswarm(aes(color = Entity), cex = 2, show.legend = FALSE) +
+    ggtitle(paste0("Predicted ", df$Maturation[1], " Proportion for each Sample by Entity")) +
+    theme_classic() +
+    RotatedAxis()
+  ggsave(paste0(figpath, df$Maturation[1], "boxplot.pdf"))
+}
+```
+
+```{r}
+ggplot(MatProp) +
+geom_bar(position = "fill", aes(x = Entity, fill = Freq)) +
+  ggtitle("Predicted Maturation States for each Entity") +
+  RotatedAxis()
+```
+
+```{r, fig.width=5, fig.height=11}
+# View maturation state distribution in each sample plotted on the Combined sample UMAP.
+DimPlot(Combined, group.by = "predicted.Maturation.bulk", split.by = "PatientID", ncol = 5, pt.size = 1) + coord_fixed()
+ggsave(paste0(figpath, "SampleUMAPs.pdf"))
+```
+
+```{r}
+# Calculate Kappa vs Lambda proportions based on surface expression (ADT)
+KLR <- function(x) {
+  x$KLR <- x@assays$ADT@counts[".Kappa",]/(x@assays$ADT@counts[".Kappa",] + x@assays$ADT@counts[".Lambda",])
+  return(x)
+}
+Combined <- KLR(Combined)
+```
+
+```{r, fig.width=20, fig.height=44}
+# View Kappa-Lambda ratio in each sample plotted on the Combined sample UMAP.
+FeaturePlot(Combined, features = "KLR", split.by = "PatientID", pt.size = 1, cols = c("blue", "red")) +
+  coord_fixed() + 
+  ggtitle("Kappa (Red) vs Lambda (Blue)") +
+  patchwork::plot_layout(ncol = 5, nrow = 11) 
+ggsave(paste0(figpath, "KLRSampleUMAPs.pdf"))
+```
+
+## Classify for each entity
+
+```{r}
+gc()
+# Load list of 51 samples
+Entities <- readRDS(file = "data/Objects/B_EntityList.rds")
+```
+
+```{r}
+Entities <- lapply(Entities, classify)
+```
+
+```{r}
+saveRDS(Entities, file = "data/Objects/B_EntityList.rds")
+```
+
+```{r, fig.width = 5}
+MatPlot <- function(x){
+  plot1 <- DimPlot(x, group.by = "predicted.Maturation.bulk") + coord_fixed()
+  plot2 <- DimPlot(x, group.by = 'Maturation_M') + coord_fixed()
+  plot2+plot1
+}
+lapply(Entities, MatPlot)
+```
+
+```{r}
+sessionInfo()
+```

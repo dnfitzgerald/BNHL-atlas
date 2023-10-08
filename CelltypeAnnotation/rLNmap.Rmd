@@ -1,0 +1,640 @@
+---
+title: "Reactive Lymph Node Maturation State Reference Construction and Annotation"
+author: "Donnacha Fitzgerald"
+date: "26/11/2021"
+output: BiocStyle::html_document
+---
+
+This script serves to build a B-cell maturation annotated reactive lymph node reference CITE-Seq dataset which will subsequently be used to map maturation states in tumor cells (ReferenceMapping.Rmd). 
+
+```{r setup, include=FALSE, set.seed(23)}
+knitr::opts_chunk$set(echo = TRUE, cache = T)
+```
+
+# Load Packages and Data
+
+```{r}
+library(BiocStyle)
+library(tidyverse)
+library(Seurat)
+library(gridExtra)
+library(fs)
+```
+
+```{r, eval=FALSE}
+# Bcells data loaded after clustering and annotation
+Bcells <- readRDS("data/SeuratObjects_Int/Combined_B_annotated.rds")
+DimPlot(Bcells, label = TRUE, repel = TRUE) + coord_fixed() + NoLegend()
+```
+
+# Split object by entity
+```{r, eval=FALSE}
+DefaultAssay(Bcells) <- "RNA"
+# remove existing integrated assays from full dataset
+Bcells[['integratedRNA']] <- NULL
+Bcells[['integratedADT']] <- NULL
+Bcells <- SplitObject(Bcells, split.by = "Entity")
+```
+
+# Reactive Lymph Node Reference Construction
+
+## Processing
+```{r, eval=FALSE}
+Proc <- function(sobj) {
+  
+  sobj <- NormalizeData(sobj, normalization.method = "LogNormalize", 
+                        scale.factor = 10000)
+  sobj <- FindVariableFeatures(sobj, selection.method = "vst", 
+                               nfeatures = 2000)
+  
+  #### Plot variable features (top 20 labelled)
+  plot1 <- VariableFeaturePlot(sobj)
+  print(LabelPoints(plot = plot1, points = head(VariableFeatures(sobj), 20), 
+                    repel = TRUE)+theme_bw())
+  
+  ##### Scale data (RNA)
+  sobj <- ScaleData(sobj, features = rownames(sobj))
+  
+  ##### Normalized and scale data (ADT)
+  sobj <- NormalizeData(sobj, assay = "ADT", normalization.method = "CLR")
+  sobj <- ScaleData(sobj, assay = "ADT")
+  
+  #### Assess cell cycle
+  sobj <- CellCycleScoring(sobj, s.features = cc.genes$s.genes, 
+                           g2m.features = cc.genes$g2m.genes, 
+                           set.ident = TRUE)
+  sobj <- ScaleData(sobj, vars.to.regress = c("S.Score", "G2M.Score", 
+                                              "percent.mt"))
+  
+  #### Run PCA and print ElbowPlot
+  sobj <- RunPCA(sobj, features = VariableFeatures(sobj), nfeatures.print=5)
+  
+  return(sobj)
+  
+}
+rLN <- Proc(Bcells$rLN)
+```
+
+## Sample Integration
+
+To reduce batch effects, the RNA and ADT data across samples were aligned using the following approach for data integration: https://www.cell.com/cell/fulltext/S0092-8674(19)30559-8
+
+### RNA
+```{r, verbose = FALSE, eval=FALSE}
+samples <- SplitObject(rLN, split.by = "PatientID")
+anchors <- FindIntegrationAnchors(object.list = samples, dims = 1:50, assay = rep("RNA", length(samples)))
+rLN <- IntegrateData(anchorset = anchors, dims = 1:50, new.assay.name = "integratedRNA")
+rm(anchors, samples)
+```
+### ADT
+```{r, verbose = FALSE, eval=FALSE}
+samples <- SplitObject(rLN, split.by = "PatientID")
+anchors <- FindIntegrationAnchors(object.list = samples, dims = 1:50, assay = rep("ADT", length(samples)))
+rLN <- IntegrateData(anchorset = anchors, dims = 1:50, new.assay.name = "integratedADT")
+rm(anchors, samples)
+```
+
+## Transcriptomic Clustering
+```{r, eval=FALSE}
+DefaultAssay(rLN) <- "integratedRNA"
+# Run the standard workflow for visualization and clustering
+VariableFeatures(rLN) <- rownames(rLN@assays$integratedRNA@data)
+rLN <- ScaleData(rLN, verbose = FALSE)
+rLN <- RunPCA(rLN, npcs = 50, verbose = FALSE, reduction.name = "pcaRNA", reduction.key = "pcaRNA_")
+
+# UMAP and Clustering
+rLN <- RunUMAP(rLN, dims = 1:50, reduction = "pcaRNA",  reduction.name = "umapRNA", reduction.key = "umapRNA_", return.model = TRUE)
+rLN <- FindNeighbors(rLN, reduction = "pcaRNA", dims = 1:50)
+rLN <- FindClusters(rLN, resolution = 1)
+saveRDS(rLN, file = "/huber/users/fitzgerald/R/Workflowr/cite-seq/data/SeuratObjects_Int/Entity/rLN/rLN.rds")
+DimPlot(rLN) + coord_fixed()
+```
+## Calculate Kappa-Lambda ratio
+```{r}
+KLR <- function(x) {
+  klr <- x@assays$integratedRNA@data["IGKC",]/(x@assays$integratedRNA@data["IGKC",] + x@assays$integratedRNA@data["IGLC1",] + x@assays$integratedRNA@data["IGLC2",] + x@assays$integratedRNA@data["IGLC3",] + x@assays$integratedRNA@data["IGLC5",] + x@assays$integratedRNA@data["IGLC6",] + x@assays$integratedRNA@data["IGLC7",]) %>% t()
+  x@meta.data$KLR <- klr[1,]
+  return(x)
+}
+rLN <- KLR(rLN)
+FeaturePlot(rLN, features = "KLR", cols = c("blue", "red")) + coord_fixed()
+# Red = Kappa dominant, blue = lambda dominant
+```
+
+```{r}
+# Load output of above
+rLN <- readRDS(file = "data/SeuratObjects_Int/Entity/rLN/rLN.rds")
+Idents(rLN) <- "integratedRNA_snn_res.1"
+```
+
+
+## Differential Expression Analysis
+
+```{r, verbose = FALSE}
+DefaultAssay(rLN) <- "RNA"
+RNAmarkers1 <- FindAllMarkers(rLN, assay = "RNA", features = VariableFeatures(rLN), slot = "counts")
+ADTmarkers1 <- FindAllMarkers(rLN, assay = "ADT", min.pct = 0, logfc.threshold = 0, slot = "counts")
+```
+
+### RNA
+```{r}
+RNAmarkers1 %>% group_by(cluster) %>% top_n(n = 10, wt = avg_log2FC)
+```
+```{r, fig.height = 9}
+RNAmarkers1 %>% group_by(cluster) %>% top_n(n = 5, wt = avg_log2FC) -> top3
+DoHeatmap(subset(rLN, downsample = 1000), features = top3$gene, assay = "RNA", slot = "scale.data", raster = FALSE)
+```
+
+### ADT
+```{r}
+ADTmarkers1 %>% group_by(cluster) %>% top_n(n = 10, wt = avg_log2FC)
+```
+```{r, fig.height = 8}
+rLN <- ScaleData(rLN, assay = "ADT")
+ADTmarkers1 %>% group_by(cluster) %>% top_n(n = 5, wt = avg_log2FC) -> top5
+DoHeatmap(subset(rLN, downsample = 1000), features = top5$gene, assay = "ADT", slot = "scale.data", raster = FALSE)
+```
+
+```{r, fig.width = 22, fig.height = 6}
+setwd("papers/Bcells/figures/CelltypeMapping/Entities")
+  annotated <- DimPlot(rLN, label = TRUE, label.size = 5, repel = TRUE) + coord_fixed() + NoLegend() + ggtitle("Transcriptomic UMAP")
+  RNAmarkers <- DotPlot(rLN, assay = "RNA", features = c("IGHD", "IGHM", "CD24", "CD1C", "TCL1A", "GPR183", "MME", "CCNB1", "AICDA", "CD27", "CD40", "CD83", "BACH2", "CCR6", "TNFRSF17","IRF4", "PRDM1", "CD38", "FAS", "IGHG1", "CXCR3"), cluster = FALSE, dot.scale = 5) + RotatedAxis() + coord_flip() + ggtitle("Maturation Stage RNA Marker Profile")
+  ADTmarkers <- DotPlot(rLN, assay = "integratedADT", features = c(".CD24", ".CD62L", ".CD10", ".CD27", ".CD38", ".CD95", ".CD183"), cluster = FALSE, dot.scale = 5) + RotatedAxis() + coord_flip() + ggtitle("Maturation Stage Epitope Marker Profile")
+  full <- grid.arrange(annotated, RNAmarkers, ADTmarkers, ncol = 3, nrow = 1)
+  path_sanitize("rLN", replacement = "_") %>% paste0("markers2.jpg") %>% ggsave(plot = full, width = 22, height = 6)
+```
+
+## Cluster Annotation
+0: MZB/MC
+1: Naïve (pre-follicular)
+2: MZB/MC
+3: Naïve
+4: Naïve
+5: MZB/MC (IGHA++)
+6: IFMB 
+7: CC
+8: MB (CD11C high)
+9: MZB/MC (or dead)
+10: HSPMB (or dead)
+11: CB (or PPB due to CD38 and CD95)
+12: MZB/MC (or CC, EGR1 high)
+13: CB
+14: PB
+15: MZB/MC
+16: Naïve (ILGC7/ILGC6++)
+
+
+```{r}
+Idents(rLN) <- "integratedRNA_snn_res.1"
+new.cluster.ids <- c("MZB/MC", "Naïve", "MZB/MC", "Naïve", "Naïve", "MZB/MC", "MB (IFN)", "CC", "MB (CD11C)", "MZB/MC", "MB (HSP)", "CB", "MZB/MC", "CB", "PB", "MZB/MC", "Naïve")
+names(new.cluster.ids) <- levels(rLN)
+rLN <- RenameIdents(rLN, new.cluster.ids)
+rLN@meta.data$Maturation_old <- Idents(rLN)
+DimPlot(rLN, group.by = "Maturation_old", label=TRUE, repel = TRUE) + coord_fixed()
+
+```
+
+```{r, fig.width = 22, fig.height = 6}
+setwd("papers/Bcells/figures/CelltypeMapping/Entities")
+  annotated <- DimPlot(rLN, label = TRUE, label.size = 5, repel = TRUE) + coord_fixed() + NoLegend() + ggtitle("Transcriptomic UMAP")
+  RNAmarkers <- DotPlot(rLN, assay = "RNA", features = c("IGHD", "IGHM", "CD24", "CD1C", "TCL1A", "GPR183", "MME", "CCNB1", "AICDA", "CD27", "CD40", "CD83", "BACH2", "CCR6", "TNFRSF17","IRF4", "PRDM1", "CD38", "FAS", "IGHG1", "CXCR3"), cluster = FALSE, dot.scale = 5) + RotatedAxis() + coord_flip() + ggtitle("Maturation Stage RNA Marker Profile")
+  ADTmarkers <- DotPlot(rLN, assay = "integratedADT", features = c(".CD24", ".CD62L", ".CD10", ".CD27", ".CD38", ".CD95", ".CD183"), cluster = FALSE, dot.scale = 5) + RotatedAxis() + coord_flip() + ggtitle("Maturation Stage Epitope Marker Profile")
+  full <- grid.arrange(annotated, RNAmarkers, ADTmarkers, ncol = 3, nrow = 1)
+  path_sanitize("rLN", replacement = "_") %>% paste0("markers2.jpg") %>% ggsave(plot = full, width = 22, height = 6)
+```
+
+
+## Revised Maturation State Annotations
+
+Maturation states revised after predictions from sorted maturation states.
+```{r}
+rLN <- readRDS(file = "data/Objects/rLN.rds")
+```
+
+```{r}
+DimPlot(rLN, group.by = c("integratedRNA_snn_res.1", "predicted.Maturation.bulk"), label = TRUE, shuffle = TRUE) + coord_fixed()
+```
+0: MD27 
+1: Naïve (Kappa)
+2: IgG
+3: Naïve
+4: Naïve (ACTB+)
+5: IgA
+6: Mixed mem (IFI)
+7: LZ late
+8: IgG (CD11c+) (activated)
+9: IgG
+10: IgG (HSP+)
+11: DZ 
+12: MD27 (EGR1+)
+13: LZ early
+14: Plasma
+15: MD27 (CD25+)
+16: Naïve
+
+### Fine-grained Annotations
+```{r, fig.height = 7, fig.width = 7}
+Idents(rLN) <- "integratedRNA_snn_res.1"
+new.cluster.ids <- c("IgM/IgD Mem", "Naïve", "IgG Mem", "Naïve", "Naïve (ACTB+)", "IgA Mem", "Mixed Mem (IFI)", "Late LZ", "Mixed Mem (CD11c+)", "IgG Mem", "Mixed Mem (HSP+)", "DZ", "IgM/IgD Mem (EGR1+)", "Early LZ", "Plasma", "IgM/IgD Mem (CD25+)", "Naïve")
+names(new.cluster.ids) <- levels(rLN)
+rLN <- RenameIdents(rLN, new.cluster.ids)
+# Reorder labels
+Idents(rLN) <- factor(x = Idents(rLN), 
+                      levels = c("Naïve", "Naïve (ACTB+)", "DZ", "Early LZ", 
+                                 "Late LZ", "IgM/IgD Mem", "IgM/IgD Mem (CD25+)", 
+                                 "IgM/IgD Mem (EGR1+)", "Mixed Mem (IFI)", 
+                                 "IgG Mem", "IgA Mem",
+                                 "Mixed Mem (HSP+)", "Mixed Mem (CD11c+)",
+                                 "Plasma"))
+rLN@meta.data$Maturation_fine <- Idents(rLN)
+DimPlot(rLN, label = TRUE, repel = TRUE,
+        cols = c("#043db0", # Naive
+                 "#032b7d",
+                 "#952ba6", # DZ
+                 "#d71488", # LZ
+                 "#890a56", 
+                 "#fc3861", # MD27
+                 "#dd2954",
+                 "#c12347",
+                 "#9b1e39",
+                 "#ff6e38", # IgG
+                 "#df592d",
+                 "#c04c25",
+                 "#9c3e1d",
+                 "#e29400"), # Plasma
+        label.box = TRUE, 
+        label.color = "white",
+        label.size = 4) + coord_fixed() +
+  ggtitle("Refined Maturation States") +
+  NoLegend()
+ggsave("papers/Bcells/figures/CelltypeMapping/rLN/UMAP_MaturationFine.pdf")
+DimPlot(rLN,
+        cols = c("#043db0", # Naive
+                 "#032b7d",
+                 "#952ba6", # DZ
+                 "#d71488", # LZ
+                 "#890a56", 
+                 "#fc3861", # MD27
+                 "#dd2954",
+                 "#c12347",
+                 "#9b1e39",
+                 "#ff6e38", # IgG
+                 "#df592d",
+                 "#c04c25",
+                 "#9c3e1d",
+                 "#e29400")) + coord_fixed() +
+  ggtitle("rLN B Cell Maturation States") +
+  NoLegend()
+ggsave("papers/Bcells/figures/CelltypeMapping/rLN/UMAP_MaturationFine_unlabelled.pdf", height = 5, width = 5)
+```
+
+```{r}
+Idents(rLN) <- "Maturation_fine"
+# Reorder labels
+Idents(rLN) <- factor(x = Idents(rLN), 
+                      levels = c("Naïve", "Naïve (ACTB+)", "DZ", "Early LZ", 
+                                 "Late LZ", "IgM/IgD Mem", "IgM/IgD Mem (CD25+)", 
+                                 "IgM/IgD Mem (EGR1+)", "Mixed Mem (IFI)", 
+                                 "IgG Mem", "IgA Mem",
+                                 "Mixed Mem (HSP+)", "Mixed Mem (CD11c+)",
+                                 "Plasma"))
+RNAmarkers1 <- FindAllMarkers(rLN, assay = "RNA", features = VariableFeatures(rLN))
+saveRDS(RNAmarkers1, "output/Bcells/ReferenceMapping/RNAmarkers_rLN_fine.rds")
+ADTmarkers1 <- FindAllMarkers(rLN, assay = "ADT", min.pct = 0, logfc.threshold = 0)
+saveRDS(ADTmarkers1, "output/Bcells/ReferenceMapping/ADTmarkers_rLN_fine.rds")
+```
+
+```{r, fig.height = 10, fig.width = 15}
+# Surface proteins
+ADTmarkers1 %>% group_by(cluster) %>% top_n(n = 5, wt = avg_log2FC) -> top5
+DoHeatmap(rLN, group.by = "Maturation_fine", features = top5$gene, assay = "ADT", slot = "scale.data", 
+          raster = TRUE, label = TRUE, size = 4, angle = 90,
+        group.colors = c("#043db0", # Naive
+                 "#032b7d",
+                 "#952ba6", # DZ
+                 "#d71488", # LZ
+                 "#890a56", 
+                 "#fc3861", # MD27
+                 "#dd2954",
+                 "#c12347",
+                 "#9b1e39",
+                 "#ff6e38", # IgG
+                 "#df592d",
+                 "#c04c25",
+                 "#9c3e1d",
+                 "#e29400")) +
+  ggtitle("Differentially Abundant Proteins")
+ggsave("papers/Bcells/figures/CelltypeMapping/rLN/ADTheatmap_MaturationFine.png", device = "png", height = 10, width = 15, dpi = 300)
+# Gene expression
+RNAmarkers1 %>% group_by(cluster) %>% top_n(n = 5, wt = avg_log2FC) -> top5
+DoHeatmap(rLN, group.by = "Maturation_fine", features = top5$gene, assay = "RNA", slot = "scale.data", 
+          raster = TRUE, label = TRUE, size = 4, angle = 90,
+        group.colors = c("#043db0", # Naive
+                 "#032b7d",
+                 "#952ba6", # DZ
+                 "#d71488", # LZ
+                 "#890a56", 
+                 "#fc3861", # MD27
+                 "#dd2954",
+                 "#c12347",
+                 "#9b1e39",
+                 "#ff6e38", # IgG
+                 "#df592d",
+                 "#c04c25",
+                 "#9c3e1d",
+                 "#e29400")) +
+  ggtitle("Differentially Expressed Genes")
+ggsave("papers/Bcells/figures/CelltypeMapping/rLN/RNAheatmap_MaturationFine.png", device = "png", height = 10, width = 15, dpi = 300)
+```
+
+```{r, fig.height=10, fig.width = 7}
+Idents(rLN) <- "Maturation_fine"
+DotPlot(rLN, assay = "RNA", 
+            features = rev(c("IGHD", "IGHM", "TCL1A", "SELL", "CD1C", "CXCR5", 
+                         "MME", "BCL6", "CCNB1", "AICDA", 
+                         "CAMK1","IRKCB", "CD72", "MS4A1", "PTPN6", 
+                         "SLA", "FCRL2", "CFLAR", "FOXP1",
+                         "CD83", "EBI3", "BTK", "BLK", "CD74", "BLNK", 
+                         "CD40", "NFKB1", "NFKB2", "TRAF1", "ICAM1", "REL", "RELB", "BACH2", 
+                         "CCR6", "GPR183", 
+                         "TNFRSF17","IRF4", "XPB1", "PRDM1", 
+                         "CD38","FAS", "IGHG1", "IGHA1", "IGHE", "CXCR3", 
+                         "IGLC2","IGKC")), dot.scale = 4, cols = c("white", "darkgreen")) +
+      RotatedAxis() + coord_flip() + ggtitle("Maturation Marker Expression")
+ggsave("papers/Bcells/figures/CelltypeMapping/rLN/DotPlotRNA_FineMaturation.pdf")
+
+DotPlot(rLN, assay = "ADT", 
+            features = rev(c(".CD62L", ".CD185", ".CD10", ".CD20", ".CD38", 
+                         ".CD95", ".CD183")), dot.scale = 4, cols = c("white", "darkgreen")) +
+      RotatedAxis() + coord_flip() + ggtitle("ADT Maturation Marker Profile")
+ggsave("papers/Bcells/figures/CelltypeMapping/rLN/DotPlotADT_FineMaturation.pdf")
+```
+
+### Course Annotations
+```{r, fig.height = 6, fig.width = 6}
+Idents(rLN) <- "integratedRNA_snn_res.1"
+new.cluster.ids <- c("MD27", "Naïve", "IgG", "Naïve", "Naïve", "IgG", "MD27", "LZ", "IgG", "IgG", "IgG", "DZ", "MD27", "LZ", "Plasma", "MD27", "Naïve")
+names(new.cluster.ids) <- levels(rLN)
+rLN <- RenameIdents(rLN, new.cluster.ids)
+# Reorder labels
+Idents(rLN) <- factor(x = Idents(rLN), 
+                      levels = c("Naïve", "DZ", "LZ", "MD27", "IgG", "Plasma"))
+rLN@meta.data$Maturation_course <- Idents(rLN)
+DimPlot(rLN, label = TRUE,
+        cols = c("#043db0", 
+                 "#952ba6",
+                 "#d71488",
+                 "#fc3861",
+                 "#ff6e38",
+                 "#e29400"),
+        label.box = TRUE, 
+        label.color = "white",
+        label.size = 5) + coord_fixed() +
+  ggtitle("Course Maturation States") +
+  NoLegend()
+ggsave("papers/Bcells/figures/CelltypeMapping/rLN/UMAP_MaturationCourse.pdf")
+
+```
+```{r, fig.height=5, fig.width = 2.5}
+DotPlot(rLN, assay = "RNA", group.by = "Maturation_course",
+            features = rev(c("IGHD", "IGHM", "TCL1A", "SELL", "CD1C", "CXCR5", 
+                         "MME", "BCL6", "CCNB1", "AICDA", 
+                         "CAMK1","IRKCB", "CD72", "MS4A1", "PTPN6", 
+                         "SLA", "FCRL2", "CFLAR", "FOXP1",
+                         "CD83", "EBI3", "BTK", "BLK", "CD74", "BLNK", 
+                         "CD40", "NFKB1", "NFKB2", "TRAF1", "ICAM1", "REL", "RELB", "BACH2", 
+                         "CCR6", "GPR183", 
+                         "TNFRSF17","IRF4", "XPB1", "PRDM1", 
+                         "CD38","FAS", "IGHG1", "IGHA1", "IGHE", "CXCR3", 
+                         "IGLC2","IGKC")), dot.scale = 4, cols = c("white", "darkgreen")) +
+      RotatedAxis() + coord_flip() + ggtitle("Maturation Marker Expression")
+ggsave("papers/Bcells/figures/CelltypeMapping/rLN/DotPlotRNA_CourseMaturation.pdf")
+
+DotPlot(rLN, assay = "ADT", group.by = "Maturation_course",
+            features = rev(c(".CD62L", ".CD185", ".CD10", ".CD20", ".CD38", 
+                         ".CD95", ".CD183")), cols = c("white", "darkgreen")) +
+      RotatedAxis() + coord_flip() + ggtitle("ADT Maturation Marker Profile")
+ggsave("papers/Bcells/figures/CelltypeMapping/rLN/DotPlotADT_CourseMaturation.pdf")
+```
+
+
+```{r, fig.width = 6, fig.height = 6}
+Idents(rLN) <- "predicted.Maturation.bulk"
+mylevels <- c("Naïve", "DZ", "LZ", "MD27", "IgG", "Plasma")
+rLN@active.ident <- factor(x = rLN@active.ident, levels = mylevels)
+DimPlot(rLN, 
+        shuffle = TRUE,
+        cols = c("#043db0", 
+                 "#952ba6",
+                 "#d71488",
+                 "#fc3861",
+                 "#ff6e38",
+                 "#e29400")) +
+  coord_fixed() + 
+  ggtitle("Predicted Maturation States")
+ggsave("papers/Bcells/figures/CelltypeMapping/rLN/rLN_PredictedMaturation.pdf")
+```
+```{r, fig.height=5, fig.width = 2.5}
+mylevels <- c("Naïve", "DZ", "LZ", "MD27", "IgG", "Plasma")
+rLN$predicted.Maturation.bulk <- factor(x = rLN$predicted.Maturation.bulk, levels = mylevels)
+DotPlot(rLN, assay = "RNA", group.by = "predicted.Maturation.bulk",
+            features = rev(c("IGHD", "IGHM", "TCL1A", "SELL", "CD1C", "CXCR5", 
+                         "MME", "BCL6", "CCNB1", "AICDA", 
+                         "CAMK1","IRKCB", "CD72", "MS4A1", "PTPN6", 
+                         "SLA", "FCRL2", "CFLAR", "FOXP1",
+                         "CD83", "EBI3", "BTK", "BLK", "CD74", "BLNK", 
+                         "CD40", "NFKB1", "NFKB2", "TRAF1", "ICAM1", "REL", "RELB", "BACH2", 
+                         "CCR6", "GPR183", 
+                         "TNFRSF17","IRF4", "XPB1", "PRDM1", 
+                         "CD38","FAS", "IGHG1", "IGHA1", "IGHE", "CXCR3", 
+                         "IGLC2","IGKC")), cols = c("white", "darkgreen")) +
+      RotatedAxis() + coord_flip() + ggtitle("Maturation Marker Expression")
+ggsave("papers/Bcells/figures/CelltypeMapping/rLN/DotPlotRNA_PredictedMaturation.pdf")
+
+DotPlot(rLN, assay = "ADT", group.by = "predicted.Maturation.bulk",
+            features = rev(c(".CD62L", ".CD185", ".CD10", ".CD20", ".CD38", 
+                         ".CD95", ".CD183")), cols = c("white", "darkgreen")) +
+      RotatedAxis() + coord_flip() + ggtitle("ADT Maturation Marker Profile")
+ ggsave("papers/Bcells/figures/CelltypeMapping/rLN/DotPlotADT_PredictedMaturation.pdf")
+```
+
+```{r}
+saveRDS(rLN, file = "data/Objects/rLN.rds")
+```
+
+# Mapping Trajectories with PHATE
+
+```{r}
+# Save color pallete for cell type labels
+mathue1 <- c("#043db0", # Naive
+                 "#952ba6", # DZ
+                 "#d71488", # LZ
+                 "#fc3861", # MD27
+                 "#ff6e38", # IgG
+                 "#e29400") # Plasma
+mathue2 <- c("#043db0", # Naive
+                 "#032b7d",
+                 "#952ba6", # DZ
+                 "#d71488", # LZ
+                 "#890a56", 
+                 "#fc3861", # MD27
+                 "#dd2954",
+                 "#c12347",
+                 "#9b1e39",
+                 "#ff6e38", # IgG
+                 "#df592d",
+                 "#c04c25",
+                 "#9c3e1d",
+                 "#e29400") # Plasma
+```
+
+```{r}
+DefaultAssay(rLN) <- "integratedRNA"
+rLN@reductions$pca <- rLN@reductions$pcaRNA
+```
+
+```{r}
+rLN <- RunPHATE(rLN, assay = "integratedRNA") # run default parameters
+```
+
+
+```{r}
+DimPlot(rLN, 
+        group.by = "Maturation_course",
+        cols = mathue1,
+       reduction = "phate",
+       ncol = 2) +
+  coord_fixed()
+```
+
+```{r}
+DimPlot(rLN, 
+        group.by = "Maturation_fine",
+        cols = mathue2,
+       reduction = "phate",
+       ncol = 2) +
+  coord_fixed()
+```
+
+With default parameters, DZ, LZ and plasma seperate out nicely, but naive group with memory.
+
+```{r}
+rLN <- RunPHATE(rLN, assay = "integratedRNA", gamma = 0) # try square root potential
+```
+
+```{r}
+DimPlot(rLN, 
+        group.by = "Maturation_course",
+        cols = mathue1,
+       reduction = "phate",
+       ncol = 2) +
+  coord_fixed()
+```
+
+
+```{r}
+DimPlot(rLN, 
+        group.by = "Maturation_fine",
+        cols = mathue2,
+       reduction = "phate",
+       ncol = 2) +
+  coord_fixed()
+```
+An improvement is observed, although it is still difficult to distinguish memory and naive.
+
+```{r}
+rLN <- RunPHATE(rLN, assay = "integratedRNA", gamma = 0, t = 120) # try increasing t
+DimPlot(rLN, 
+        group.by = "Maturation_course",
+        cols = mathue1,
+       reduction = "phate",
+       ncol = 2) +
+  coord_fixed()
+DimPlot(rLN, 
+        group.by = "Maturation_fine",
+        cols = mathue2,
+       reduction = "phate",
+       ncol = 2) +
+  coord_fixed()
+```
+This is substantially worse.
+
+
+```{r}
+rLN <- RunPHATE(rLN, assay = "integratedRNA", gamma = 0, t = 20) # try decreasing t
+DimPlot(rLN, 
+        group.by = "Maturation_course",
+        shuffle = TRUE,
+        cols = mathue1,
+       reduction = "phate",
+       ncol = 2) +
+  coord_fixed()
+DimPlot(rLN, 
+        group.by = "Maturation_fine",
+        shuffle = TRUE,
+        cols = mathue2,
+       reduction = "phate",
+       ncol = 2) +
+  coord_fixed()
+```
+This makes it slightly easier to distinguish naive and  memory classes.
+
+```{r}
+rLN <- RunPHATE(rLN, assay = "integratedRNA", gamma = 0, t = 10) # try further decreasing t
+DimPlot(rLN, 
+        group.by = "Maturation_course",
+        shuffle = TRUE,
+        cols = mathue1,
+       reduction = "phate",
+       ncol = 2) +
+  coord_fixed()
+DimPlot(rLN, 
+        group.by = "Maturation_fine",
+        shuffle = TRUE,
+        cols = mathue2,
+       reduction = "phate",
+       ncol = 2) +
+  coord_fixed()
+```
+A disprovement is observed, with centroblasts drifting towards plasma cells.
+
+
+```{r, fig.width = 6, fig.height=6}
+rLN <- RunPHATE(rLN, assay = "integratedRNA", gamma = 0, t = 40) # try raising t a little again.
+DimPlot(rLN, 
+        group.by = "Maturation_course",
+        shuffle = TRUE,
+        cols = mathue1,
+       reduction = "phate") +
+  coord_fixed() +
+  ggtitle("Maturation Trajectories")
+ggsave("papers/Bcells/figures/CelltypeMapping/rLN/PHATE_MaturationCourse.pdf")
+DimPlot(rLN, 
+        group.by = "Maturation_fine",
+        shuffle = TRUE,
+        cols = mathue2,
+       reduction = "phate",
+       label = TRUE,
+       repel = TRUE,
+        label.box = TRUE, 
+        label.color = "white",
+        label.size = 3) +
+  coord_fixed() +
+  ggtitle("Maturation Trajectories")
+ggsave("papers/Bcells/figures/CelltypeMapping/rLN/PHATE_MaturationFine.pdf")
+```
+```{r, fig.width = 6, fig.height=6}
+rLN$predicted.Maturation.bulk <- factor(x = rLN$predicted.Maturation.bulk, 
+                      levels = c("Naïve", "DZ", "LZ", "MD27", "IgG", "Plasma"))
+DimPlot(rLN, 
+        group.by = "predicted.Maturation.bulk",
+        shuffle = TRUE,
+        cols = mathue1,
+       reduction = "phate") +
+  coord_fixed()
+ggsave("papers/Bcells/figures/CelltypeMapping/rLN/PHATE_predicted.Maturation.bulk.pdf")
+```
+
+```{r}
+saveRDS(rLN, file = "data/Objects/rLN.rds")
+```

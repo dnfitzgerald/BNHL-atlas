@@ -1,0 +1,775 @@
+---
+title: "Annotating Multimodal Clusters (MOFA) in the CITE-Seq B-cell Dataset"
+author: "Donnacha Fitzgerald"
+date: '2022-09-01'
+output: html_document
+---
+
+This script follows the multi-omic factor analysis (MOFA) in BcellMapping.Rmd and the mapping of B-cell maturation states from reactive lymph nodes in ReferenceMapping.Rmd to analyse multi-modal clusters in the CITE-Seq B-cell dataset.
+
+```{r setup, include=FALSE, set.seed(23)}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE, lazy.load = FALSE)
+```
+
+```{r}
+library(workflowr)
+library(tidyverse)
+library(Seurat)
+```
+
+```{r}
+# Set color palette for maturation states
+mathue9 <- c("#ff707c",
+              "#975F24",
+              "#f8d058",
+              "#41d5a8",
+              "#006c0b",
+              "#902395")
+              
+mathue11 <- c("#ff707c", # Naive
+                 "#e76b60",
+                 "#975F24", # DZ
+                 "#f8d058", # LZ
+                 "#cdd65f", 
+                 "#41d5a8", # MD27
+                 "#36b18c",
+                 "#2eeec8",
+                 "#2ecd93",
+                 "#006c0b", # IgG
+                 "#4c6c02",
+                 "#2e9a00",
+                 "#3ac300",
+                 "#902395") # Plasma
+```
+
+
+# Load and Visualize Data
+
+```{r}
+# Load full CITE-Seq dataset from 51 lymph node samples, with mapping from the rLN reference
+Combined <- readRDS("data/Objects/Combined_B_refmap.rds")
+```
+
+```{r}
+order <- function(x){  # Set order of identity classes to match maturation process
+  x$predicted.Maturation_fine <- factor(x$predicted.Maturation_fine, 
+                      levels = c("Naïve", "Naïve (ACTB+)", "DZ", "Early LZ", 
+                                 "Late LZ", "IgM/IgD Mem", "IgM/IgD Mem (CD25+)", 
+                                 "IgM/IgD Mem (EGR1+)", "Mixed Mem (IFI)", 
+                                 "IgG Mem", "IgA Mem",
+                                 "Mixed Mem (HSP+)", "Mixed Mem (CD11c+)",
+                                 "Plasma"))
+  x$predicted.Maturation_course <- factor(x$predicted.Maturation_course, 
+                      levels = c("Naïve", "DZ", "LZ", "MD27", "IgG", "Plasma"))
+  x$Entity <- factor(x$Entity, 
+                      levels = c("rLN", "MCL", "FL", "DLBCL, GCB", "DLBCL, non-GCB", "MZL"))
+x$predicted.Maturation.bulk <- factor(x$predicted.Maturation.bulk, 
+                      levels = c("Naïve", "DZ", "LZ", "MD27", "IgG", "Plasma"))
+  return(x)
+}
+Combined <- order(Combined)
+```
+
+## rLN Reference UMAP
+```{r, fig.width = 10, fig.height = 7}
+# Plot manually annotated maturation states, states predicted from a reactive lymph node single cell reference, states predicted from bulk RNA-seq of sorted maturation states from reactive lymph nodes and tonsils and a multimodal clustering (on MOFA latent factors).
+DimPlot(Combined, group.by = c("Maturation_M", "predicted.Maturation.bulk", "predicted.Maturation_course", "predicted.Maturation_fine"), reduction = "ref.umap")
+```
+### Bulk predictions
+```{r, fig.width = 20, fig.height = 4.5}
+DimPlot(Combined, split.by = "Entity", group.by = "predicted.Maturation.bulk", 
+        reduction = "ref.umap", cols = mathue1, ncol = 6) + coord_fixed()
+```
+### Maturation Scores
+```{r}
+# Add UPscores as new assay
+AddScores <- function(x){
+  scores <- colnames(x@meta.data) %>% str_which("UPscore")
+  x[["scores"]] <- x@meta.data[, scores] %>% t() %>% CreateAssayObject()
+  x <- FindVariableFeatures(x, assay = "scores") %>% ScaleData(assay = "scores")
+}
+Combined <- AddScores(Combined)
+```
+
+```{r, fig.width = 4, fig.height = 4}
+# Plot scaled scores for each maturation state
+ScoresHeatmap <- function(x){
+  Idents(x) <- "predicted.Maturation_course"
+  AverageExpression(x, return.seurat = TRUE, assays = "scores", slot = "scale.data") %>% 
+    DoHeatmap(assay = "scores", label = TRUE ,draw.lines = FALSE, slot = "scale.data",
+              features = rownames(x@assays$scores@scale.data),
+              group.colors = mathue1, group.bar = TRUE, size = 3, raster = FALSE) + 
+    scale_fill_gradientn(colors = rev(RColorBrewer::brewer.pal(n =10, name = "RdYlBu")))+
+    ggtitle(x$Entity[1]) +
+    theme(plot.title = element_text(size=15))
+  # ggsave(paste0("papers/Bcells/figures/ReferenceMapping/", x$Entity[1], "ScoresHeatmap_course.pdf"), width = 4, height = 4)
+}
+lapply(SplitObject(Combined, split.by = "Entity"), ScoresHeatmap)
+```
+```{r, fig.height = 10, fig.width = 5}
+DotPlot(Combined, assay = "RNA", group.by = "predicted.Maturation.bulk",
+            features = rev(c("IGHD", "IGHM", "TCL1A", "SELL", "CD1C", "CXCR5", 
+                         "MME", "BCL6", "CCNB1", "AICDA", 
+                         "CAMK1", "CD72", "MS4A1", "PTPN6", 
+                         "SLA", "FCRL2", "CFLAR", "FOXP1",
+                         "CD83", "EBI3", "BTK", "BLK", "CD74", "BLNK", 
+                         "CD40", "NFKB1", "NFKB2", "TRAF1", "ICAM1", "REL", "RELB", "BACH2", 
+                         "CCR6", "GPR183", 
+                         "TNFRSF17","IRF4", "PRDM1", 
+                         "CD38","FAS", "IGHG1", "IGHA1", "IGHE", "CXCR3", 
+                         "IGLC2","IGKC")), dot.scale = 4,
+          cols = c("white", "darkgreen")) + 
+      RotatedAxis() + coord_flip()
+```
+
+```{r, fig.height = 10, fig.width = 5}
+DotPlot(Combined, assay = "RNA", group.by = "predicted.Maturation_course",
+            features = rev(c("IGHD", "IGHM", "TCL1A", "SELL", "CD1C", "CXCR5", 
+                         "MME", "BCL6", "CCNB1", "AICDA", 
+                         "CAMK1", "CD72", "MS4A1", "PTPN6", 
+                         "SLA", "FCRL2", "CFLAR", "FOXP1",
+                         "CD83", "EBI3", "BTK", "BLK", "CD74", "BLNK", 
+                         "CD40", "NFKB1", "NFKB2", "TRAF1", "ICAM1", "REL", "RELB", "BACH2", 
+                         "CCR6", "GPR183", 
+                         "TNFRSF17","IRF4", "PRDM1", 
+                         "CD38","FAS", "IGHG1", "IGHA1", "IGHE", "CXCR3", 
+                         "IGLC2","IGKC")), dot.scale = 4,
+          cols = c("white", "darkgreen")) + 
+      RotatedAxis() + coord_flip()
+```
+
+### Course
+
+```{r, fig.width = 20, fig.height = 4.5}
+DimPlot(Combined, split.by = "Entity", group.by = "predicted.Maturation_course", 
+        reduction = "ref.umap", cols = mathue1, ncol = 6) + coord_fixed()
+```
+```{r, fig.width = 12, fig.height = 3.5}
+ggplot(Combined@meta.data, aes(x = PatientID, fill = predicted.Maturation_course)) +
+  geom_bar(position = "fill") + 
+  ggtitle("Maturation State Proportions by Sample") +
+  RotatedAxis() +
+  theme_minimal() +
+  theme(legend.position = "right", plot.title = element_text(hjust = 0.5), axis.title.x = element_text(hjust = 0.5), axis.text.x = element_text(angle=45, size = 7)) +
+  scale_fill_manual(values = mathue1, name = "Maturation") +
+  ylab("Proportion") +
+  facet_grid(cols = vars(Entity), scales = "free") +
+  RotatedAxis()
+```
+
+### Fine
+```{r, fig.width = 20, fig.height = 4.5}
+DimPlot(Combined, split.by = "Entity", group.by = "predicted.Maturation_fine", 
+        reduction = "ref.umap", cols = mathue2, ncol = 6) + coord_fixed()
+```
+
+## RNA UMAP
+
+UMAP from RNA-seq data only.
+
+```{r, fig.width = 10, fig.height = 7}
+# Plot manually annotated maturation states, states predicted from a reactive lymph node single cell reference, states predicted from bulk RNA-seq of sorted maturation states from reactive lymph nodes and tonsils and a multimodal clustering (on MOFA latent factors).
+DimPlot(Combined, group.by = c("Maturation_M", "predicted.Maturation.bulk", "predicted.Maturation_course", "predicted.Maturation_fine"), reduction = "umapRNA")
+```
+
+## Multimodal UMAP
+
+UMAP from multi-omic factor analysis (MOFA) based joint dimensionality reduction of RNA-seq and surface epitope profiling.
+
+```{r, fig.width = 10, fig.height = 7}
+# Plot manually annotated maturation states, states predicted from a reactive lymph node single cell reference, states predicted from bulk RNA-seq of sorted maturation states from reactive lymph nodes and tonsils and a multimodal clustering (on MOFA latent factors).
+DimPlot(Combined, group.by = c("Maturation_M", "predicted.Maturation.bulk", "predicted.Maturation_course", "predicted.Maturation_fine"), reduction = "umapMOFA")
+```
+
+```{r}
+# View confidence scores of predicted maturation states from the single-cell reference
+FeaturePlot(Combined, features = "predicted.Maturation_course.score", cols = c("blue", "red"), reduction = "umapMOFA") + coord_fixed()
+```
+```{r, fig.width = 4, fig.height = 3.5}
+DimPlot(Combined, group.by = "predicted.Maturation_course", 
+        reduction = "umapMOFA", cols = mathue1) +
+  coord_fixed()
+  ggtitle("Maturation States (course)")
+ggsave("figures/CelltypeMapping/MOFAumapMaturation_course.pdf")
+```
+
+```{r}
+# View confidence scores of predicted maturation states from the single-cell reference
+FeaturePlot(Combined, features = "predicted.Maturation_course.score", cols = c("blue", "red"), reduction = "umapMOFA") + coord_fixed()
+```
+
+```{r, fig.width = 4, fig.height = 3.5}
+DimPlot(Combined, group.by = "predicted.Maturation_fine", 
+        reduction = "umapMOFA", cols = mathue2,
+                label = TRUE, repel = TRUE,
+        label.box = TRUE, 
+        label.color = "white",
+        label.size = 4) + 
+  coord_fixed() +
+  NoLegend() +
+  ggtitle("Maturation States (fine)")
+ggsave("figures/CelltypeMapping/MOFAumapMaturation_fine.pdf")
+```
+
+
+```{r, fig.width = 4, fig.height = 3.5}
+DimPlot(Combined, group.by = "predicted.Maturation_course", 
+        reduction = "umapMOFA", cols = mathue3, label = FALSE) + 
+  coord_fixed() +
+  ggtitle("Maturation States") + 
+    theme(plot.title = element_text(size = 20, face = "bold"))
+ggsave("figures/CelltypeMapping/MOFAumapMaturation_course.pdf")
+```
+
+
+```{r}
+# View confidence scores of predicted maturation states from the single-cell reference
+FeaturePlot(Combined, features = "predicted.Maturation_fine.score", cols = c("blue", "red"), reduction = "umapMOFA") + coord_fixed()
+```
+
+High confidence is obtained for most predictions mapped from the single cell reactive lymph node reference.
+
+
+
+## Maturation scores
+
+Visualize average expression of differentially expressed genese in Holmes et al, 2020, J Exp Med.
+
+```{r}
+colnames(Combined@meta.data)
+scores <- colnames(Combined@meta.data)[43:69]
+```
+
+```{r, fig.width = 10, fig.height = 15}
+FeaturePlot(Combined, features = scores, cols = c("blue", "red")) + NoLegend()
+```
+
+```{r, fig.width = 4, fig.height = 3.5}
+DimPlot(Combined, group.by = "MOFAclusters_res1", 
+        reduction = "umapMOFA",
+        label = TRUE, repel = TRUE,
+        label.box = TRUE, 
+        label.color = "white",
+        label.size = 3) +
+  coord_fixed() +
+  ggtitle("Multimodal Clustering")
+ggsave("figures/CelltypeMapping/MOFAumapClustersres1.pdf")
+```
+
+
+```{r}
+VlnPlot(Combined, features = "nCount_RNA") + NoLegend()
+```
+
+```{r, fig.width = 5, fig.height = 4.5}
+# Group satellite cells (cluster 25 onward)
+Idents(Combined) <- "MOFAclusters_res1"
+new.cluster.ids <- c("0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "25", "25", "25", "25", "25", "25", "25", "25", "25", "25", "25")
+names(new.cluster.ids) <- levels(Combined)
+Combined <- RenameIdents(Combined, new.cluster.ids)
+Combined$MOFAclusters_clean <- Idents(Combined)
+DimPlot(Combined, 
+        reduction = "umapMOFA",
+        label = TRUE, repel = TRUE,
+        label.box = TRUE, 
+        label.color = "black",
+        label.size = 5) +
+  coord_fixed() +
+  NoLegend() +
+  ggtitle("Multimodal Clusters") + 
+    theme(plot.title = element_text(size = 20, face = "bold", hjust = 0.5))
+ggsave("figures/CelltypeMapping/MOFAumapClustersres1.pdf")
+```
+
+
+```{r, fig.width = 2.5, fig.height = 2.5}
+DimPlot(Combined, group.by = "PatientID", reduction = "umapMOFA", shuffle = TRUE) + 
+  coord_fixed() +
+  NoLegend() +
+  ggtitle("Samples")
+ggsave("figures/CelltypeMapping/SamplesUMAP.pdf")
+```
+```{r, fig.width = 3, fig.height = 2.5}
+DimPlot(Combined, group.by = "Stage", reduction = "umapMOFA", shuffle = TRUE) + 
+  coord_fixed() +
+  ggtitle("Stage")
+ggsave("figures/CelltypeMapping/StageUMAP.pdf")
+```
+
+```{r}
+DimPlot(Combined, group.by = "Malignant", reduction = "umapMOFA", shuffle = TRUE) + 
+  coord_fixed() +
+  ggtitle("Malignancy")
+```
+
+```{r, fig.width = 2.5, fig.height = 2.5}
+DimPlot(Combined, group.by = "Entity",
+        shuffle = TRUE,
+        reduction = "umapMOFA",
+        label = TRUE, repel = TRUE,
+        label.box = TRUE, 
+        label.color = "black",
+        label.size = 4) +
+  coord_fixed() +
+  NoLegend()
+ggsave("figures/CelltypeMapping/MOFAumapEntity.pdf")
+```
+```{r, fig.width = 3, fig.height = 2.5}
+DimPlot(Combined, group.by = "predicted.Maturation_course", reduction = "umapMOFA", shuffle = TRUE, cols = mathue3) +
+  coord_fixed() +
+  ggtitle("Maturation")
+ggsave("figures/CelltypeMapping/MaturationUMAP.pdf")
+```
+
+# Annotation
+
+```{r}
+DimPlot(Combined, label = TRUE, repel = TRUE, reduction = "umapMOFA") + coord_fixed()
+```
+
+## Malignant vs Non-Malignant
+
+### Kappa-Lambda ratio
+
+Determine Kappa vs Lambda expression for each cell to determine clonality. Monoclonal clusters of cells are more likely to be malignant.
+
+```{r}
+# Calculate Kappa vs Lambda proportions based on surface expression (ADT)
+KLR <- function(x) {
+  x$KLR <- x@assays$ADT@counts[".Kappa",]/(x@assays$ADT@counts[".Kappa",] + x@assays$ADT@counts[".Lambda",])
+  return(x)
+}
+Combined <- KLR(Combined)
+```
+
+```{r, fig.width = 10, fig.height = 30}
+# Plot Kappa-Lambda-ratio to determine clonality
+FeaturePlot(Combined, features = "KLR", cols = c("blue", "red"), split.by = "PatientID", reduction = "umapMOFA") +
+    patchwork::plot_layout(ncol = 4, nrow = 13)
+```
+
+Clusters 11 and 12 appear to be non-malignant in nature, whereas others are predominantly malignant.
+
+```{r, fig.width = 10}
+VlnPlot(Combined, features = "KLR")
+```
+Due to the mixture of samples, it is difficult to determine which clusters are predominantly malignant from this plot.
+
+### Entity Distribution
+```{r}
+ggplot(Combined@meta.data, aes(x = Entity, fill = Idents(Combined))) +
+  geom_bar(position = "fill") + 
+  ggtitle("Cluster Proportions by Entity") +
+  RotatedAxis()
+```
+
+```{r, fig.width = 10, fig.height = 6}
+DimPlot(Combined, split.by = "Entity", reduction = "umapMOFA", ncol = 3, label = TRUE)
+```
+Clusters 9, 11, 12 and 21 are predominantly in reactive lymph nodes, and thus non-malignant in nature.
+
+Predominant malignant vs non-malignant for each cluster:
+
+0: Malignant
+1: Malignant
+2: Malignant
+3: Malignant
+4: Malignant
+5: Malignant
+6: Malignant
+7: Malignant
+8: Malignant
+9: Non-malignant
+10: Malignant
+11: Non-malignant
+12: Non-malignant
+13: Malignant
+14: Non-malignant
+15: Malignant
+16: Mix
+17: Malignant
+18: Malignant
+19: Malignant
+20: Mix
+21: Non-malignant
+22: Mix
+...: Mix
+
+
+```{r, fig.width = 2.5, fig.height = 2.5}
+Idents(Combined) <- "MOFAclusters_res1"
+DimPlot(Combined, reduction = "umapMOFA", pt.size = 0.1, label = TRUE)
+new.cluster.ids <- c("Malignant", "Malignant", "Malignant", "Malignant", 
+                     "Malignant", "Malignant", "Malignant", "Malignant",
+                     "Malignant", "Non-malignant", "Malignant", "Non-malignant",
+                     "Non-malignant", "Malignant", "Non-malignant",
+                     "Malignant", "Mix", "Malignant", "Malignant",
+                     "Malignant", "Mix", "Non-malignant", "Mix", "Mix", "Mix",
+                     "Mix",  "Mix",  "Mix", "Mix", "Mix", "Mix", "Mix", "Mix", 
+                     "Mix", "Mix", "Mix", "Mix", "Mix")
+names(new.cluster.ids) <- levels(Combined)
+Combined <- RenameIdents(Combined, new.cluster.ids)
+Combined$Malignant <- Idents(Combined)
+DimPlot(Combined, reduction = "umapMOFA", pt.size = 0.1,
+        shuffle = TRUE,
+        label = TRUE, repel = TRUE,
+        label.box = TRUE, 
+        label.color = "black",
+        label.size = 5) + coord_fixed() + NoLegend()+
+  ggtitle("Malignant vs Non-Malignant Predominance")
+ggsave("figures/CelltypeMapping/MOFAumapMalignancy.pdf")
+```
+
+```{r, fig.width = 4, fig.height = 3.5}
+DimPlot(Combined, reduction = "umapMOFA", pt.size = 0.1,
+        group.by = "PatientID",
+        shuffle = TRUE) + coord_fixed() + NoLegend() +
+  ggtitle("Samples")
+ggsave("figures/CelltypeMapping/MOFAumapSamples.pdf")
+```
+
+
+
+## Maturation State Markers
+```{r, fig.width = 5, fig.height = 5}
+DotPlot(Combined, assay = "RNA", group.by = "MOFAclusters_clean",
+          features = rev(c("IGHD", "IGHM", "TCL1A", "SELL", "CD1C", "CXCR5", 
+                       "MME", "BCL6", "CCNB1", "AICDA", 
+                       "CAMK1", "CD72", "MS4A1", "PTPN6", 
+                       "SLA", "FCRL2", "CFLAR", "FOXP1",
+                       "CD83", "EBI3", "BTK", "BLK", "CD74", "BLNK", 
+                       "CD40", "NFKB1", "NFKB2", "TRAF1", "ICAM1", "REL", "RELB", "BACH2", 
+                       "CCR6", "GPR183", 
+                       "TNFRSF17","IRF4", "PRDM1", 
+                       "CD38","FAS", "IGHG1", "IGHA1", "IGHE", "CXCR3", 
+                       "IGLC2","IGKC")), dot.scale = 6, cols = "RdYlBu") + 
+    RotatedAxis() + coord_flip() + ggtitle("Maturation State Markers by Multimodal Cluster")
+ggsave("papers/Bcells/figures/CelltypeMapping/CombinedMOFAmaturationDotPlot_fine.pdf")
+```
+
+```{r, fig.width = 5, fig.height = 5.5}
+DotPlot(Combined, assay = "RNA", group.by = "predicted.Maturation_fine",
+          features = rev(c("IGHD", "IGHM", "TCL1A", "SELL", "CD1C", "CXCR5", 
+                       "MME", "BCL6", "CCNB1", "AICDA", 
+                       "CAMK1", "CD72", "MS4A1", "PTPN6", 
+                       "SLA", "FCRL2", "CFLAR", "FOXP1",
+                       "CD83", "EBI3", "BTK", "BLK", "CD74", "BLNK", 
+                       "CD40", "NFKB1", "NFKB2", "TRAF1", "ICAM1", "REL", "RELB", "BACH2", 
+                       "CCR6", "GPR183", 
+                       "TNFRSF17","IRF4", "PRDM1", 
+                       "CD38","FAS", "IGHG1", "IGHA1", "IGHE", "CXCR3", 
+                       "IGLC2","IGKC")), dot.scale = 6, cols = "RdYlBu") + 
+    RotatedAxis() + coord_flip() + ggtitle("Maturation State Markers by Mapped Maturation State")
+ggsave("papers/Bcells/figures/CelltypeMapping/CombinedmaturationDotPlot_Maturationfine.pdf")
+```
+
+## Malignant Transformation Aberrations
+```{r, fig.width = 5, fig.height = 5}
+DotPlot(Combined, assay = "RNA", group.by = "MOFAclusters_clean",
+          features = rev(c("CCND1", # MCL up
+                           "BCL2", "EZH2", # FL up
+                           "BCL6", "MDM2", "MYC", "CARD11", "MYD88", "IRF4", #DLBCL, GCB up
+                           "NFKB1", "NFKB2", "SPIB", "IL6", "JAK1", "JAK2", "JAK3", "STAT3", #DLBCL, non-GCB up
+                           "BMI1", "TP53", "CDKN2A", "ATM", # MCL down
+                           "TNFRSF14", "FAS", "MEF2B", "MEF2C", "CREBBP", "EP300", # FL down
+                           "PTEN", "B2M", "CD58", "KMT2B", #DLBCL, GCB down
+                           "PRDM1")),  # DLBCL, ABC down
+                           dot.scale = 6, cols = "RdYlBu") + 
+    RotatedAxis() + 
+  coord_flip() + 
+  ggtitle("Malignant Transformation Aberration Markers by Cluster")
+ggsave("papers/Bcells/figures/CelltypeMapping/CombinedMOFAmalignantDotPlot_fine.pdf")
+```
+
+```{r, fig.width = 5, fig.height = 5}
+DotPlot(Combined, assay = "RNA", group.by = "predicted.Maturation_fine",
+          features = rev(c("CCND1", # MCL up
+                           "BCL2", "EZH2", # FL up
+                           "BCL6", "MDM2", "MYC", "CARD11", "MYD88", "IRF4", #DLBCL, GCB up
+                           "NFKB1", "NFKB2", "SPIB", "IL6", "JAK1", "JAK2", "JAK3", "STAT3", #DLBCL, non-GCB up
+                           "BMI1", "TP53", "CDKN2A", "ATM", # MCL down
+                           "TNFRSF14", "FAS", "MEF2B", "MEF2C", "CREBBP", "EP300", # FL down
+                           "PTEN", "B2M", "CD58", "KMT2B", #DLBCL, GCB down
+                           "PRDM1")),  # DLBCL, ABC down
+                           dot.scale = 6, cols = "RdYlBu") + 
+    RotatedAxis() + 
+  coord_flip() + 
+  ggtitle("Malignant Transformation Aberration Markers by Maturation State")
+ggsave("papers/Bcells/figures/CelltypeMapping/CombinedmalignantDotPlot_Maturationfine.pdf")
+```
+## View genetic aberrations by intratumor subpopulations
+
+```{r, fig.height = 6, fig.width = 30}
+DotPlot(Combined, assay = "RNA", group.by = "PatientID",
+        split.by = "predicted.Maturation_course",
+          features = rev(c("CCND1", # MCL up
+                           "BCL2", "EZH2", # FL up
+                           "BCL6", "MDM2", "MYC", "CARD11", "MYD88", "IRF4", #DLBCL, GCB up
+                           "NFKB1", "NFKB2", "SPIB", "IL6", "JAK1", "JAK2", "JAK3", "STAT3", #DLBCL, non-GCB up
+                           "BMI1", "TP53", "CDKN2A", "ATM", # MCL down
+                           "TNFRSF14", "FAS", "MEF2B", "MEF2C", "CREBBP", "EP300", # FL down
+                           "PTEN", "B2M", "CD58", "KMT2B", #DLBCL, GCB down
+                           "PRDM1")),  # DLBCL, ABC down
+                           dot.scale = 6, cols = "RdYlBu",
+        cluster.idents = FALSE) + 
+    RotatedAxis() + 
+  coord_flip() + 
+  ggtitle("Malignant Transformation Aberration Markers by Maturation State by Sample")
+ggsave("papers/Bcells/figures/CelltypeMapping/SamplesmalignantDotPlot_Maturationcourse.pdf")
+```
+```{r, fig.height = 10, fig.width = 18}
+DotPlot(subset(Combined, subset = Entity == "DLBCL, non-GCB"), assay = "RNA", group.by = "PatientID",
+        split.by = "predicted.Maturation_course",
+          features = rev(c("CCND1", # MCL up
+                           "BCL2", "EZH2", # FL up
+                           "BCL6", "MDM2", "MYC", "CARD11", "MYD88", "IRF4", #DLBCL, GCB up
+                           "NFKB1", "NFKB2", "SPIB", "IL6", "JAK1", "JAK2", "JAK3", "STAT3", #DLBCL, non-GCB up
+                           "BMI1", "TP53", "CDKN2A", "ATM", # MCL down
+                           "TNFRSF14", "FAS", "MEF2B", "MEF2C", "CREBBP", "EP300", # FL down
+                           "PTEN", "B2M", "CD58", "KMT2B", #DLBCL, GCB down
+                           "PRDM1")),  # DLBCL, ABC down
+                           dot.scale = 6, cols = "RdYlBu",
+        cluster.idents = FALSE) + 
+    RotatedAxis() + 
+  coord_flip() + 
+  ggtitle("Malignant Transformation Aberration Markers by Maturation State by Sample")
+ggsave("papers/Bcells/figures/CelltypeMapping/DLBCLmalignantDotPlot_Maturationcourse.pdf")
+```
+
+```{r, fig.height = 10, fig.width = 18}
+DotPlot(subset(Combined, subset = Entity == "DLBCL, non-GCB"), assay = "RNA", group.by = "PatientID",
+        split.by = "predicted.Maturation_course",
+          features = rev(c("CCND1", # MCL up
+                           "BCL2", "EZH2", # FL up
+                           "BCL6", "MDM2", "MYC", "CARD11", "MYD88", "IRF4", #DLBCL, GCB up
+                           "NFKB1", "NFKB2", "SPIB", "IL6", "JAK1", "JAK2", "JAK3", "STAT3", #DLBCL, non-GCB up
+                           "BMI1", "TP53", "CDKN2A", "ATM", # MCL down
+                           "TNFRSF14", "FAS", "MEF2B", "MEF2C", "CREBBP", "EP300", # FL down
+                           "PTEN", "B2M", "CD58", "KMT2B", #DLBCL, GCB down
+                           "PRDM1")),  # DLBCL, ABC down
+                           dot.scale = 6, cols = "RdYlBu",
+        cluster.idents = FALSE) + 
+    RotatedAxis() + 
+  coord_flip() + 
+  ggtitle("Malignant Transformation Aberration Markers by Maturation State by Sample")
+ggsave("papers/Bcells/figures/CelltypeMapping/DLBCLmalignantDotPlot_Maturationcourse.pdf")
+```
+
+## View known variants from genomic analyses 
+
+```{r}
+# 10 most common variant genes from genomic analysis
+Variants <- rev(c("KMT2D", "HIST1H1E", "ATM", "TNFRSF14", "BCL2", "CREBBP", "EP300", "TP53", "BCL7A", "MYD88"))
+```
+
+
+### By maturation states
+```{r, fig.width = 5, fig.height = 5}
+DotPlot(Combined, assay = "RNA", group.by = "State",
+          features = Variants, dot.scale = 6, cols = "RdYlBu") + 
+    RotatedAxis() + 
+  coord_flip() + 
+  ggtitle("Variant Expression by State")
+ggsave("papers/Bcells/figures/CelltypeMapping/VariantDotPlot_Maturationcourse.pdf")
+```
+
+### By MOFA clusters
+```{r, fig.width = 9, fig.height = 5}
+DotPlot(Combined, assay = "RNA", group.by = "MOFAclusters_clean",
+          features = Variants, dot.scale = 6, cols = "RdYlBu") + 
+    RotatedAxis() + 
+  coord_flip() + 
+  ggtitle("Variant Expression by MOFA Cluster")
+ggsave("papers/Bcells/figures/CelltypeMapping/VariantDotPlot_MOFA.pdf")
+```
+### By intratumor maturation state (FL)
+
+```{r, fig.height = 5, fig.width = 18}
+DotPlot(subset(Combined, subset = Entity == "FL"), assay = "RNA", group.by = "PatientID",
+        split.by = "State",
+          features = Variants,
+                           dot.scale = 6, cols = "RdYlBu",
+        cluster.idents = FALSE) + 
+    RotatedAxis() + 
+  coord_flip() + 
+  ylab("Intratumor Maturation States") +
+  ggtitle("Variant Gene Expression by Intratumor Maturation State in FL")
+ggsave("papers/Bcells/figures/CelltypeMapping/VariantDotPlot_FL_Maturationcourse.pdf")
+```
+### By intratumor maturation state (DLBCL, GCB)
+
+```{r, fig.height = 5, fig.width = 10}
+DotPlot(subset(Combined, subset = Entity == "DLBCL, GCB"), assay = "RNA", group.by = "PatientID",
+        split.by = "State",
+          features = Variants,
+                           dot.scale = 6, cols = "RdYlBu",
+        cluster.idents = FALSE) + 
+    RotatedAxis() + 
+  coord_flip() + 
+  ylab("Intratumor Maturation States") +
+  ggtitle("Variant Gene Expression by Intratumor Maturation State in DLBCL, GCB")
+ggsave("papers/Bcells/figures/CelltypeMapping/VariantDotPlot_DLBCL_GCB_Maturationcourse.pdf")
+```
+### By intratumor maturation state (DLBCL, non-GCB)
+
+```{r, fig.height = 5, fig.width = 12}
+DotPlot(subset(Combined, subset = Entity == "DLBCL, non-GCB"), assay = "RNA", group.by = "PatientID",
+        split.by = "predicted.Maturation_course",
+          features = Variants,
+                           dot.scale = 6, cols = "RdYlBu",
+        cluster.idents = FALSE) + 
+    RotatedAxis() + 
+  coord_flip() + 
+  ylab("Intratumor Maturation States") +
+  ggtitle("Variant Gene Expression by Intratumor Maturation State in DLBCL, non-GCB")
+ggsave("papers/Bcells/figures/CelltypeMapping/VariantDotPlot_DLBCL_nonGCB_Maturationcourse.pdf")
+```
+
+# Subpopulation Distribution by Sample
+```{r, fig.width = 12, fig.height = 5}
+ggplot(Combined@meta.data, aes(x = PatientID, fill = MOFAclusters_clean)) +
+  geom_bar(position = "fill") + 
+  ggtitle("Subpopulation Proportions by Sample") +
+  RotatedAxis() +
+  theme_minimal() +
+  theme(legend.position = "right", plot.title = element_text(hjust = 0.5), axis.title.x = element_text(hjust = 0.5), axis.text.x = element_text(angle=45, size = 7)) +
+  ylab("Proportion") +
+  facet_grid(cols = vars(Entity), scales = "free") +
+  RotatedAxis()
+ggsave("papers/Bcells/figures/CelltypeMapping/CombinedMOFAclustersbar.pdf")
+```
+
+```{r, fig.width = 7, fig.height = 2}
+ggplot(Combined@meta.data, aes(x = MOFAclusters_clean, fill = predicted.Maturation_fine)) +
+  geom_bar(position = "fill") + 
+  ggtitle("Maturation State Proportions by Cluster") +
+  RotatedAxis() +
+  theme_minimal() +
+  theme(legend.position = "right", plot.title = element_text(hjust = 0.5), axis.title.x = element_text(hjust = 0.5), axis.text.x = element_text(angle=45, size = 7)) +
+  scale_fill_manual(values = mathue2, name = "Maturation") +
+  ylab("Proportion") +
+  xlab("Multimodal Cluster")
+  RotatedAxis()
+ggsave("papers/Bcells/figures/CelltypeMapping/MaturationStateclustersbar.pdf")
+```
+```{r, fig.width = 7, fig.height = 2}
+ggplot(Combined@meta.data, aes(x = MOFAclusters_clean, fill = State)) +
+  geom_bar(position = "fill") + 
+  ggtitle("Maturation State Proportions by Cluster") +
+  RotatedAxis() +
+  theme_minimal() +
+  theme(legend.position = "right", plot.title = element_text(hjust = 0.5), axis.title.x = element_text(hjust = 0.5), axis.text.x = element_text(angle=45, size = 7)) +
+  scale_fill_manual(values = mathue9, name = "Maturation") +
+  ylab("Proportion") +
+  xlab("Multimodal Cluster")
+  RotatedAxis()
+ggsave("papers/Bcells/figures/CelltypeMapping/MaturationStateclustersbar_course.pdf")
+```
+```{r, fig.width = 7, fig.height = 2}
+ggplot(Combined@meta.data, aes(x = MOFAclusters_clean, fill = Relapse)) +
+  geom_bar(position = "fill") + 
+  ggtitle("Relapse Proportions by Cluster") +
+  RotatedAxis() +
+  theme_minimal() +
+  theme(legend.position = "right", plot.title = element_text(hjust = 0.5), axis.title.x = element_text(hjust = 0.5), axis.text.x = element_text(angle=45, size = 7)) +
+  scale_fill_manual(values = mathue9, name = "Maturation") +
+  ylab("Proportion") +
+  xlab("Multimodal Cluster")
+  RotatedAxis()
+```
+
+# Differentially Expressed Genes
+
+
+```{r}
+Idents(Combined) <- "MOFAclusters_clean"
+RNAmarkers <- FindAllMarkers(Combined, assay = "RNA")
+saveRDS(RNAmarkers, "output/Bcells/CelltypeMapping/RNAmarkers_MOFAclusters.rds")
+ADTmarkers <- FindAllMarkers(Combined, assay = "ADT", min.pct = 0, logfc.threshold = 0)
+saveRDS(ADTmarkers, "output/Bcells/CelltypeMapping/ADTmarkers_MOFAclusters.rds")
+```
+
+## RNA
+
+```{r}
+combined_averages <- AverageExpression(Combined, return.seurat = TRUE, assays = c("RNA", "ADT")) 
+```
+
+```{r}
+library(ggplot2)
+RNAmarkers %>% group_by(cluster) %>% top_n(n = 3, wt = avg_log2FC) -> top3
+RNAheatmap <- DoHeatmap(combined_averages, features = top3$gene, label = TRUE,
+          draw.lines = FALSE, raster = FALSE, assay = "RNA", size = 5) +
+    scale_fill_gradient2(low = "darkblue", mid = "white", high = "darkred", midpoint = 0) +
+  theme(legend.position = "none")+
+  ggtitle("Differentially Expressed Genes by Cluster") +
+  guides(color="none") + 
+  theme(plot.title = element_text(size=18, face = "bold"))
+```
+
+## ADT
+
+```{r}
+ADTmarkers %>% group_by(cluster) %>% top_n(n = 3, wt = avg_log2FC) -> top3
+ADTheatmap <- DoHeatmap(ScaleData(combined_averages, assay = "ADT"), features = top3$gene, label = TRUE,
+          draw.lines = FALSE, raster = FALSE, assay = "ADT", size = 5) +
+    scale_fill_gradient2(low = "darkblue", mid = "white", high = "darkred", midpoint = 0) +
+  ggtitle("Differentially Abundant Markers by Cluster") +
+  guides(color="none") + 
+  theme(plot.title = element_text(size=18, face = "bold"))
+  theme(legend.position = "none")
+```
+
+```{r, fig.width = 15, fig.height = 9}
+library(patchwork)
+patch <- RNAheatmap + ADTheatmap + plot_layout(guides = "collect")
+ggsave("figures/Supp10/heatmaps.pdf", plot = patch, width = 15, height = 9)
+```
+
+```{r}
+# generate unlabelled maturation UMAP
+DimPlot(Combined, reduction = "umapMOFA",
+        group.by = "predicted.Maturation_fine",
+        cols = c("#043db0", # Naive
+                 "#032b7d",
+                 "#952ba6", # DZ
+                 "#d71488", # LZ
+                 "#890a56", 
+                 "#fc3861", # MD27
+                 "#dd2954",
+                 "#c12347",
+                 "#9b1e39",
+                 "#ff6e38", # IgG
+                 "#df592d",
+                 "#c04c25",
+                 "#9c3e1d",
+                 "#e29400")) + coord_fixed() +
+  ggtitle("Maturation States") +
+  NoLegend()
+ggsave("papers/Bcells/figures/CelltypeMapping/CombinedUMAP_MaturationFine_unlabelled.pdf", height = 5, width = 5)
+```
+
+```{r}
+DimPlot(Combined, reduction = "umapMOFA", group.by = "predicted.Maturation_course", ) + coord_fixed()
+```
+
+
+# Add Relapse Status and Days Diagnosed
+
+```{r}
+# Clinical features from the patient medical records are matched to each sample in the single-cell object
+features <- readxl::read_xlsx("ClinicalFeatures/ClinicalFeatures_finaltranslated.xlsx", sheet = "clean") %>%
+  filter(Entity != "CLL") %>% 
+  select(PatientID, Relapse, DaysDiagnosed)
+```
+
+```{r}
+meta <- left_join(Combined@meta.data, features, by = "PatientID")
+rownames(meta)<-rownames(Combined@meta.data)
+Combined <- AddMetaData(Combined, meta[, 78:79])
+```
+
+```{r}
+saveRDS(Combined, "data/Objects/Combined_B_full.rds")
+```
+

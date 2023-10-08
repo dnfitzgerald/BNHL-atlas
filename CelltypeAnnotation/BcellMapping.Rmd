@@ -1,0 +1,1285 @@
+---
+title: "B-cell Mapping with RNA, ADT and MOFA"
+author: "Donnacha Fitzgerald"
+date: "13/07/2021"
+output: html_document
+---
+
+This script shows the initial exploration of B-cell subpopulations in the CITE-Seq dataset (51 samples) after preprocessing. This includes clustering based on the transcriptome (RNA), the surface epitopes (ADT), and a multimodal embedding with multi-omic factor analysis (MOFA) and initial characterization based on maturation state markers and cell-of-origin classifiers. Maturation state annotations were further refined in ReferenceMapping.Rmd.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+set.seed(23)
+```
+
+```{r, warning=FALSE}
+library(reticulate)
+use_python("/g/easybuild/x86_64/CentOS/7/haswell/software/Python/3.8.2-GCCcore-9.3.0/bin/python3", required = TRUE)
+py_config()
+library(MOFA2)
+library(workflowr)
+library(tidyverse)
+library(Seurat)
+```
+
+# Load Data
+
+```{r}
+# Bcells from the full dataset (54 samples, 154729 cells) loaded after normalization, VST and sample integration (Seurat)
+Bcells <- readRDS("data/SeuratObjects_Int/Combined_B.rds")
+```
+
+## Add Clinical Features to Metadata
+
+```{r}
+# Clinical features from the patient medical records are matched to each sample in the single-cell object
+features <- readxl::read_xlsx("data/ClinicalFeatures/output/ClinicalFeatures_translated.xlsx", sheet = "clean") %>%
+  select(PatientID, WHOClass, Stage, PTCategory, PTRegimen, PTCycles, PTDuration, DaysSincePT, PTIndication, PTResponse, FTCategory, FTRegimen, FTCycles, FTDuration, DaysUntilFT, FTIndication, FTResponse, Survival, DaysFollowup, Status, Karnofsky)
+```
+
+```{r}
+meta <- left_join(Bcells@meta.data, features, by = "PatientID")
+rownames(meta)<-rownames(Bcells@meta.data)
+Bcells <- AddMetaData(Bcells, meta[, 27:46])
+```
+
+# RNA, Course
+
+## Visualize UMAP
+
+```{r}
+DimPlot(Bcells, reduction = "umapRNA", group.by = "PatientID") + coord_fixed()
+DimPlot(Bcells, reduction = "umapRNA", group.by = "Run") + coord_fixed()
+DimPlot(Bcells, reduction = "umapRNA", group.by = "Entity") + coord_fixed()
+DimPlot(Bcells, reduction = "umapRNA", group.by = "Phase") + coord_fixed()
+DimPlot(Bcells, reduction = "umapRNA", group.by = "Sex") + coord_fixed()
+DimPlot(Bcells, reduction = "umapRNA", group.by = "RNA_snn_res.0.4") + coord_fixed()
+DimPlot(Bcells, reduction = "umapRNA", group.by = "integratedRNA_snn_res.0.4", label = TRUE) + coord_fixed()
+DimPlot(Bcells, reduction = "umapRNA", group.by = "integratedADT_snn_res.0.4") + coord_fixed()
+DimPlot(Bcells, reduction = "umapRNA", group.by = "WHOClass") + coord_fixed()
+DimPlot(Bcells, reduction = "umapRNA", group.by = "Stage") + coord_fixed()
+DimPlot(Bcells, reduction = "umapRNA", group.by = "Survival") + coord_fixed()
+DimPlot(Bcells, reduction = "umapRNA", group.by = "DaysFollowup") + coord_fixed()
+DimPlot(Bcells, reduction = "umapRNA", group.by = "Status") + coord_fixed()
+DimPlot(Bcells, reduction = "umapRNA", group.by = "Karnofsky") + coord_fixed()
+```
+
+## Subpopulation Distribution
+### Across Samples
+```{r}
+Idents(Bcells) <- Bcells$integratedRNA_snn_res.0.4
+ggplot(Bcells@meta.data, aes(PatientID, fill = Idents(Bcells))) + 
+  geom_bar(position = "fill") +
+  RotatedAxis() + 
+  labs(title ="Subpopulation Distribution Across Samples", x = "Samples", y = "Proportion") +
+  theme(axis.text.x = element_text(size = 6))
+```
+### Across Entities
+```{r}
+ggplot(Bcells@meta.data, aes(Entity, fill = Idents(Bcells))) + 
+  geom_bar(position = "fill") +
+  RotatedAxis() + 
+  labs(title ="Subpopulation Distribution Across Samples", x = "Entities", y = "Proportion")
+```
+
+## Find Markers
+
+### ROC
+
+```{r RNAmarkers, eval = FALSE}
+Idents(Bcells) <- "integratedRNA_snn_res.0.4"
+RNAmarkers <- FindAllMarkers(Bcells, test.use = "roc", assay = "integratedRNA")
+saveRDS(RNAmarkers, "output/Bcells/CelltypeMapping/RNAmarkers_RNAclusters.rds")
+ADTmarkers <- FindAllMarkers(Bcells, test.use = "roc", assay = "integratedADT", min.pct = 0, logfc.threshold = 0)
+saveRDS(ADTmarkers, "output/Bcells/CelltypeMapping/ADTmarkers_RNAclusters.rds")
+```
+
+### Log Fold-change
+```{r RNAmarkers2, eval = FALSE}
+Idents(Bcells) <- "integratedRNA_snn_res.0.4"
+RNAmarkers <- FindAllMarkers(Bcells, assay = "integratedRNA")
+saveRDS(RNAmarkers, "output/Bcells/CelltypeMapping/RNAmarkersFC_RNAclusters.rds")
+ADTmarkers <- FindAllMarkers(Bcells, assay = "integratedADT")
+saveRDS(ADTmarkers, "output/Bcells/CelltypeMapping/ADTmarkersFC_RNAclusters.rds")
+```
+
+## Marker Exploration
+```{r}
+downsampled <- subset(Bcells, downsample = 1000)
+Idents(downsampled) <- "integratedRNA_snn_res.0.4"
+```
+
+### RNA Markers
+```{r}
+RNAmarkersFC <- readRDS(file = "output/Bcells/CelltypeMapping/RNAmarkersFC_RNAclusters.rds")
+RNAmarkersFC %>% group_by(cluster) %>% top_n(n = 10, wt = avg_log2FC)
+```
+```{r}
+Idents(Bcells) <- "integratedRNA_snn_res.0.4"
+RNAmarkersFC %>% group_by(cluster) %>% top_n(n = 3, wt = avg_log2FC) -> top3
+DoHeatmap(downsampled, features = top3$gene, assay = "integratedRNA", slot = "scale.data") + NoLegend()
+```
+
+```{r}
+# Calculate Kappa/Lambda RNA Ratio and add to Bcells object
+counts <- as_tibble(Bcells@assays$integratedRNA@data, rownames = NA)
+Bcells$KLR <- counts["IGKC",]/(counts["IGKC",] + counts["IGLC1",] + counts["IGLC2",] + counts["IGLC3",] + counts["IGLC5",] + counts["IGLC6",] + counts["IGLC7",]) 
+```
+
+```{r}
+FeaturePlot(Bcells, reduction = "umapRNA", features = c('KLR'), min.cutoff = 0, max.cutoff = 1, slot = "data", cols = c("blue", "red")) + coord_fixed() + ggtitle("Kappa-Lambda Ratio")
+setwd("/g/huber/users/fitzgerald/R/Workflowr/cite-seq")
+ggsave("papers/Bcells/figures/CelltypeMapping/KLR.pdf")
+```
+```{r}
+DimPlot(Bcells, reduction = "umapRNA", group.by = "PatientID", shuffle = TRUE) + coord_fixed() + NoLegend() + ggtitle("Sample Distribution")
+setwd("/g/huber/users/fitzgerald/R/Workflowr/cite-seq")
+ggsave("papers/Bcells/figures/CelltypeMapping/SampleUMAP.pdf")
+```
+
+```{r}
+DotPlot(Bcells, assay = "integratedRNA", features = c("IGHD", "IGHM", "CD24", "CD1C", "TCL1A", "GPR183", "MME", "CCNB1", "AICDA", "CD27", "CD40", "CD83", "BACH2", "CCR6", "TNFRSF17","IRF4", "PRDM1", "CD38", "FAS", "IGHG1", "CXCR3", "IGLC2", "IGKC"), dot.scale = 5) + coord_flip()
+```
+
+### ADT Markers
+```{r}
+DefaultAssay(Bcells) <- "integratedADT"
+ADTmarkersFC <- readRDS(file = "output/Bcells/CelltypeMapping/ADTmarkersFC_RNAclusters.rds")
+ADTmarkersFC %>% group_by(cluster) %>% top_n(n = 10, wt = avg_log2FC)
+```
+```{r}
+ADTmarkersFC %>% group_by(cluster) %>% top_n(n = 3, wt = avg_log2FC) -> top3
+DoHeatmap(downsampled, features = top3$gene, assay = "integratedADT", slot = "scale.data") + NoLegend()
+```
+```{r}
+# View key markers for known B-cell developmental/functional sub-types
+DotPlot(Bcells, assay = "integratedADT", features = c(".CD23", ".CD24", ".CD10", ".CD38", ".CD95", ".CD43", ".CD86")) + RotatedAxis() + coord_flip()
+```
+
+## Celltype Annotation
+
+0: Malignant marginal zone/memory B-cells (CD11c+) -> mMZB
+1: Malignant centrocytes? (EGR1+/CD11b+) -> mCC
+2: Malignant centroblasts (CCND1+) -> mCB
+3: Healthy naive B-cells -> nNaive
+4: Malignant CD10+/CD86+ differentiating b-cells (follicular or centrocytes??) -> mGCB
+5: Malignant CCND1++ B-cells (proliferating, MCL) -> mMCL
+6: Malignant HSP1++/CD11b+ B-cells (stressed, possibly memory B-cells) -> mMB
+7: Malignant Proliferating activated DLBCL B-cells -> mProl
+8: Malignant MIR155HG+ activated B-cells -> mCC2
+9: Healthy activated B-cells -> nABC
+10: Malignant Kappa/Lambda low DLBCL sample (CD86+/CD9+) -> mCD9
+11: Malignant Proliferating activated DLBCL B-cells (CCNB high) -> mProl2
+12: Malignant Plasma cells -> mPB
+13: Malignant HSPA1++ -> mMB
+14: Malignant CD7+/CD4+ -> doublets
+15: Malignant CD31+/GZMB+ -> doublets
+
+```{r}
+Idents(Bcells) <- "integratedRNA_snn_res.0.4"
+new.cluster.ids <- c("mMZB", "mCC", "mCB", "nNaive", "mGCB", "mMCL", "mMB", "mProl", "mCC2", "nABC", "mCD9", "mProl2", "mPB", "mMB",
+    "doublets", "doublets")
+names(new.cluster.ids) <- levels(Bcells)
+Bcells <- RenameIdents(Bcells, new.cluster.ids)
+Bcells$Idents0.4 <- Idents(Bcells)
+saveRDS(Bcells, file = "data/SeuratObjects_Int/Combined_B.rds")
+```
+
+```{r}
+# Remove doublets
+Bcells <- subset(x = Bcells, idents = "doublets", invert = TRUE)
+# Bcells <- subset(x = Bcells, idents = c("mMZB", "mCC", "mCB", "nNaive", "mGCB", "mMCL", "mMB", "mProl", "mCC2", "nABC", "mCD9", "mProl2", "mPB"))
+```
+
+```{r}
+DimPlot(Bcells, reduction = "umapRNA", label = TRUE, pt.size = 0.1, repel = TRUE) + coord_fixed() + NoLegend()
+setwd("/g/huber/users/fitzgerald/R/Workflowr/cite-seq")
+ggsave("papers/Bcells/figures/CelltypeMapping/RNAumapAnnotated.pdf")
+```
+
+```{r}
+downsampled <- subset(Bcells, downsample = 1000)
+```
+
+```{r}
+ADTmarkers %>% group_by(cluster) %>% top_n(n = 5, wt = power) -> top5
+DoHeatmap(downsampled, features = top5$gene, assay = "integratedADT", slot = "scale.data")
+```
+
+```{r, fig.width=7, fig.height=6}
+Idents(Bcells) <- "Idents0.4"
+ADTmarkersFC %>% group_by(cluster) %>% top_n(n = 5, wt = avg_log2FC) -> top5
+DoHeatmap(downsampled, features = top5$gene, assay = "integratedADT", slot = "scale.data", raster = FALSE)
+setwd("/g/huber/users/fitzgerald/R/Workflowr/cite-seq")
+ggsave("papers/Bcells/figures/CelltypeMapping/ADTheatmap.png")
+```
+
+```{r, fig.width=5, fig.height=6}
+RNAmarkersFC %>% group_by(cluster) %>% top_n(n = 3, wt = avg_log2FC) -> top3
+DoHeatmap(downsampled, features = top3$gene, assay = "integratedRNA", slot = "scale.data", raster = FALSE) + NoLegend()
+setwd("/g/huber/users/fitzgerald/R/Workflowr/cite-seq")
+ggsave("papers/Bcells/figures/CelltypeMapping/RNAheatmap.png")
+```
+### Subset Distribution Across Samples, Stratified by Entity
+```{r, fig.width = 10, fig.height = 4}
+ggplot(Bcells@meta.data, aes(PatientID, fill = Idents(Bcells))) + 
+  geom_bar(position = "fill") +
+  labs(title ="Subset Distribution Across Disease Entities", x = "Sample", y = "Proportion") +
+  facet_grid(cols = vars(Entity), scales = "free") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(size = 6)) +
+  RotatedAxis()
+setwd("/g/huber/users/fitzgerald/R/Workflowr/cite-seq")
+ggsave("papers/Bcells/figures/CelltypeMapping/Subsets_stratified.pdf")
+```
+
+```{r}
+FeaturePlot(Bcells, reduction = "umapRNA", features = c("percent.mt")) + coord_fixed()
+FeaturePlot(Bcells, reduction = "umapRNA", features = c("nCount_RNA")) + coord_fixed()
+FeaturePlot(Bcells, reduction = "umapRNA", features = c("nFeature_RNA")) + coord_fixed()
+FeaturePlot(Bcells, reduction = "umapRNA", features = c("PAX5"), max.cutoff = 2) + coord_fixed()
+```
+```{r}
+Idents(Bcells) <- "integratedRNA_snn_res.0.4"
+FindMarkers(Bcells, assay = "integratedRNA", ident.1 = 11, ident.2 = 7)
+```
+
+```{r}
+Idents(Bcells) <- "integratedRNA_snn_res.0.4"
+FindMarkers(Bcells, assay = "integratedADT", ident.1 = 11, ident.2 = 7)
+```
+
+```{r}
+# View key markers for known B-cell developmental/functional sub-types
+DotPlot(Bcells, assay = "integratedRNA", features = c("FCER2","MAL", "CD24", "MME", "CD38", "FAS", "CD1C", "SPN", "FCRL3","CD40", "CD83", "CCNB1", "AICDA","BACH2", "CCR6", "TNFRSF17","IRF4", "PRDM1", "CD80","CD86", "BCL6", "XBP1"), cluster = TRUE) + RotatedAxis() + coord_flip()
+```
+
+### View Univariate Marker Classification power
+
+#### Course
+```{r}
+Idents(Bcells) <- "Idents0.4"
+ADTmarkers <- FindAllMarkers(Bcells, test.use = "roc", assay = "integratedADT", min.pct = 0, logfc.threshold = 0)
+```
+
+
+#### Fine
+```{r}
+Idents(Bcells) <- "Idents1"
+ADTmarkers2 <- FindAllMarkers(Bcells, test.use = "roc", assay = "integratedADT", min.pct = 0, logfc.threshold = 0)
+```
+
+#### Maturation
+```{r}
+Idents(Bcells) <- "Maturation_M"
+DimPlot(Bcells, label = TRUE) + coord_fixed() + NoLegend()
+setwd("/g/huber/users/fitzgerald/R/Workflowr/cite-seq")
+ggsave("papers/Bcells/figures/CelltypeMapping/MaturationUMAP.pdf")
+```
+
+```{r}
+ADTmarkersM <- FindAllMarkers(Bcells, test.use = "roc", assay = "integratedADT", min.pct = 0, logfc.threshold = 0)
+```
+
+```{r}
+markersAUC <- as.data.frame(ADTmarkersM %>% group_by(cluster) %>% top_n(n = 5, wt = myAUC)) %>% select(c("myAUC", "cluster", "gene"))
+ggplot(markersAUC, aes(x = gene, y = myAUC, fill = gene)) +
+  geom_col() +
+  theme_bw() +
+    facet_grid(. ~ cluster, scales = "free") +
+  RotatedAxis() +
+  NoLegend()
+```
+
+#### Entity
+```{r}
+Idents(Bcells) <- "Entity"
+ADTmarkersE <- FindAllMarkers(Bcells, test.use = "roc", assay = "integratedADT", min.pct = 0, logfc.threshold = 0)
+```
+
+```{r}
+top5 <- ADTmarkersE %>% group_by(cluster) %>% top_n(n = 5, wt = myAUC)
+markersAUC <- as.data.frame(ADTmarkersE %>% group_by(cluster) %>% top_n(n = 5, wt = myAUC)) %>% select(c("myAUC", "cluster", "gene"))
+ggplot(markersAUC, aes(x = gene, y = myAUC, fill = gene)) +
+  geom_col() +
+  theme_bw() +
+    facet_grid(. ~ cluster, scales = "free") +
+  RotatedAxis() +
+  NoLegend()
+```
+```{r}
+DotPlot(Bcells, group.by = "Entity", assay = 'integratedADT', features = c(".CD22"))
+```
+
+
+```{r, figure.width }
+rLN
+Idents(Bcells) <- "PatientID"
+downsampled <- subset(Bcells, downsample = 100)
+DoHeatmap(downsampled, features = top5$gene, assay = "integratedADT", slot = "scale.data")
+```
+
+## Cell-of-Origin Classification
+
+A marker panel was devised for distinguishing between different germinal and extra-germinal B-cell developmental subtypes.
+
+```{r}
+# View key markers for known B-cell developmental/functional sub-types
+DotPlot(Bcells, group.by = "Idents_0.4", assay = "integratedRNA", features = c("CD24", "MME", "CD38", "FAS", "CD1C", "SPN", "FCRL3", "TCL1A", "CCNB1", "AICDA", "CD27", "CD40", "CD83", "BACH2", "CCR6", "TNFRSF17","IRF4", "PRDM1", "CD80", "CD86", "IGKC", "IGLC2"), cluster = TRUE, dot.scale = 5) + RotatedAxis() + coord_flip() + ggtitle("Lineage Marker Expression Profile")
+setwd("/g/huber/users/fitzgerald/R/Workflowr/cite-seq")
+ggsave("papers/Bcells/figures/CelltypeMapping/COOmarkers.pdf")
+```
+
+```{r, fig.height = 5, fig.width = 20}
+Idents(Bcells) <- "integratedRNA_snn_res.0.4"
+setwd("papers/Bcells/figures/CelltypeMapping")
+splot <- function(x) {
+  umap <- DimPlot(x, reduction = "umapRNA", label = TRUE, label.size = 5)
+  klr <- FeaturePlot(x, reduction = "umapRNA", features = 'KLR', min.cutoff = 0, max.cutoff = 1, slot = "data", cols = c("blue", "red")) + ggtitle("Kappa-Lambda Ratio")
+  markers <- DotPlot(x, assay = "integratedRNA", features = c("CD24", "MME", "CD38", "FAS", "CD1C", "SPN", "FCRL3", "TCL1A", "CCNB1", "AICDA", "CD27", "CD40", "CD83", "BACH2", "CCR6", "TNFRSF17","IRF4", "PRDM1", "CD80", "CD86", "IGKC", "IGLC2"), cluster = TRUE, dot.scale = 5) + RotatedAxis() + coord_flip() + ggtitle("COO Marker Profile")
+  print(umap + klr + markers)
+  ggsave("COOplots.pdf")
+}
+splot(Bcells)
+```
+
+0: Marginal Zone B-cells (MZB)
+1: Centrocytes, unclear (CC)
+2: Centroblasts, unclear (CB)
+3: Healthy centrocytes/Memory B-cells (CC-MB)
+4: Memory/regulatory B-cells (MB-RB)
+5: Marginal Zone B-cells (MZB)
+6: Memory B-cells with PMBL signature (MB)
+7: Follicular/Memory B-cells (FB-MB)
+8: Centrocytes (CC)
+9: Healthy centroblasts (CB)
+10: Mix of transitional, mantle and memory B-cell phenotype (Mix)
+11: Centroblasts (CB)
+12: Plasmablasts (PB)
+13: Follicular B-cells/Memory B-cells (FB-MB)
+14: Marginal Zone B-cells (MZB)
+15: Mix (Mix)
+
+```{r}
+Idents(Bcells) <- "integratedRNA_snn_res.0.4"
+new.cluster.ids <- c("MZB", "CC", "CB", "CC-MB", "MB-RB", "MZB", "MB", "FB-MB", "CC", "CB", "Mix", "CB", "PB", "FB-MB", "MZB", "Mix")
+names(new.cluster.ids) <- levels(Bcells)
+Bcells <- RenameIdents(Bcells, new.cluster.ids)
+Bcells@meta.data$COO <- Idents(Bcells)
+DimPlot(Bcells, reduction = "umapRNA", label = FALSE, pt.size = 0.1) + coord_fixed()
+setwd("/g/huber/users/fitzgerald/R/Workflowr/cite-seq")
+ggsave("papers/Bcells/figures/CelltypeMapping/COOMapping.pdf")
+```
+
+```{r, fig.width = 6, fig.height = 6}
+DotPlot(Bcells, assay = "integratedRNA", features = c("IGHD", "IGHM", "CD24", "MME", "CD38", "FAS", "CD1C", "SPN", "FCRL3", "TCL1A", "CCNB1", "AICDA", "CD27", "CD40", "CD83", "BACH2", "CCR6", "TNFRSF17","IRF4", "PRDM1", "IGHG1", "CXCR3"), cluster = TRUE, dot.scale = 6, scale = TRUE) + RotatedAxis() + coord_flip() + ggtitle("Maturation Stage Marker Profile")
+setwd("/g/huber/users/fitzgerald/R/Workflowr/cite-seq")
+ggsave("papers/Bcells/figures/CelltypeMapping/COOmarkerssum.pdf")
+```
+
+```{r, fig.width = 5, fig.height = 6}
+DotPlot(Bcells, assay = "integratedRNA", group.by = "Entity", features = c("IGHD", "IGHM", "CD24", "MME", "CD38", "FAS", "CD1C", "SPN", "FCRL3", "TCL1A", "CCNB1", "AICDA", "CD27", "CD40", "CD83", "BACH2", "CCR6", "TNFRSF17","IRF4", "PRDM1", "IGHG1", "CXCR3"), cluster = TRUE, dot.scale = 6, scale = TRUE) + RotatedAxis() + coord_flip() + ggtitle("COO Markers by Entity")
+setwd("/g/huber/users/fitzgerald/R/Workflowr/cite-seq")
+ggsave("papers/Bcells/figures/CelltypeMapping/COOmarkersEntity.pdf")
+```
+```{r, fig.width = 15, fig.height = 6}
+DotPlot(Bcells, assay = "integratedRNA", group.by = "PatientID", features = c("IGHD", "IGHM", "CD24", "MME", "CD38", "FAS", "CD1C", "SPN", "FCRL3", "TCL1A", "CCNB1", "AICDA", "CD27", "CD40", "CD83", "BACH2", "CCR6", "TNFRSF17","IRF4", "PRDM1", "IGHG1", "CXCR3"), cluster = TRUE, dot.scale = 6, scale = TRUE) + RotatedAxis() + coord_flip() + ggtitle("COO Markers by Sample")
+setwd("/g/huber/users/fitzgerald/R/Workflowr/cite-seq")
+ggsave("papers/Bcells/figures/CelltypeMapping/COOmarkersSample.pdf")
+```
+
+
+### COO Distribution Across Entities
+```{r}
+ggplot(Bcells@meta.data, aes(Entity, fill = COO)) + 
+  geom_bar(position = "fill") +
+  RotatedAxis() + 
+  labs(title ="COO Distribution Across Disease Entities", x = "Entity", y = "Proportion") +
+  theme_minimal()
+setwd("/g/huber/users/fitzgerald/R/Workflowr/cite-seq")
+ggsave("papers/Bcells/figures/CelltypeMapping/COOEntities.pdf")
+```
+
+### COO Distribution Across Samples
+```{r}
+ggplot(Bcells@meta.data, aes(PatientID, fill = COO)) + 
+  geom_bar(position = "fill") +
+  labs(title ="COO Distribution Across Disease Entities", x = "Sample", y = "Proportion") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(size = 6)) +
+  RotatedAxis()
+setwd("/g/huber/users/fitzgerald/R/Workflowr/cite-seq")
+ggsave("papers/Bcells/figures/CelltypeMapping/COOsamples.pdf")
+```
+
+### COO Distribution Across Samples, Stratified by Patient
+```{r}
+ggplot(Bcells@meta.data, aes(PatientID, fill = COO)) + 
+  geom_bar(position = "fill") +
+  labs(title ="COO Distribution Across Disease Entities", x = "Sample", y = "Proportion") +
+  facet_grid(cols = vars(Entity), scales = "free") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(size = 6)) +
+  RotatedAxis()
+setwd("/g/huber/users/fitzgerald/R/Workflowr/cite-seq")
+ggsave("papers/Bcells/figures/CelltypeMapping/COOsamples_stratified.pdf")
+```
+
+## Hans Classifier
+
+A popular DLBCL GCB vs non-GCB classifier with immunohistochemistry. In order of priority:
+
+MME+ (CD10+) -> GCB
+BCL6- -> non-GCB
+MUM1+ -> non-GCB
+
+### Entity
+```{r, fig.width = 6, fig.height = 4}
+DotPlot(Bcells, assay = "integratedRNA", group.by = "Entity", features = c("MME", "BCL6", "IRF4"), cluster = FALSE, dot.scale = 7, scale = TRUE) + RotatedAxis() + coord_flip() + ggtitle("Hans Classification Markers by Entity")
+setwd("/g/huber/users/fitzgerald/R/Workflowr/cite-seq")
+ggsave("papers/Bcells/figures/CelltypeMapping/HansEntity.pdf")
+```
+
+### COO
+```{r, fig.width = 6, fig.height = 4}
+DotPlot(Bcells, assay = "integratedRNA", group.by = "COO", features = c("MME", "BCL6", "IRF4"), cluster = FALSE, dot.scale = 7, scale = TRUE) + RotatedAxis() + coord_flip() + ggtitle("Hans Classification Markers by COO assignments")
+setwd("/g/huber/users/fitzgerald/R/Workflowr/cite-seq")
+ggsave("papers/Bcells/figures/CelltypeMapping/HansCOO.pdf")
+```
+## Staudt Classifier
+
+See https://www.nejm.org/doi/pdf/10.1056/NEJMoa1801445
+
+4 subtypes of DLBCL identified with differences in survival outcomes:
+
+  MCD - MYD88 and CD79b mutated
+  BN2 - BCL6 fusions and NOTCH2 mutations
+  N1 - NOTCH1 mutations
+  EZB - EZH2 mutated and BCL2 translocations
+  
+MCD and N1 subtypes have inferior outcomes.
+```{r}
+table(Bcells$PatientID, Bcells$Entity)
+```
+
+### Entity
+```{r, fig.width = 6, fig.height = 4}
+DotPlot(Bcells, assay = "integratedRNA", group.by = "Entity", features = c("MYD88", "CD79b", "BCL6", "NOTCH2", "NOTCH1", "EZH2", "BCL2"), cluster = FALSE, dot.scale = 7, scale = TRUE) + RotatedAxis() + coord_flip() + ggtitle("Hans Classification Markers by Entity")
+setwd("/g/huber/users/fitzgerald/R/Workflowr/cite-seq")
+ggsave("papers/Bcells/figures/CelltypeMapping/HansEntity.pdf")
+```
+
+### COO
+```{r, fig.width = 6, fig.height = 4}
+DotPlot(Bcells, assay = "integratedRNA", group.by = "COO", features = c("MME", "BCL6", "IRF4"), cluster = FALSE, dot.scale = 7, scale = TRUE) + RotatedAxis() + coord_flip() + ggtitle("Hans Classification Markers by COO assignments")
+setwd("/g/huber/users/fitzgerald/R/Workflowr/cite-seq")
+ggsave("papers/Bcells/figures/CelltypeMapping/HansCOO.pdf")
+```
+
+## Seifert Genetic Lesion Markers
+```{r, fig.width = 7, fig.height = 4}
+Idents(Bcells) <- "Idents0.4"
+DotPlot(Bcells, assay = "integratedRNA", features = c("CCND1", "ATM", "DLEU2", "CDKN2A", "TP53", "TNFAIP3", "NOTCH1", "BCL2", "MLL2", "CREBBP", "BCL6", "CD95", "BLIMP1"), , cluster = FALSE, dot.scale = 7, scale = TRUE) + RotatedAxis() + coord_flip() + ggtitle("Genetic Lesion Markers by Subpopulation")
+```
+
+# RNA, Fine
+
+## Clustering
+```{r}
+DefaultAssay(Bcells) <- "integratedRNA"
+Bcells <- FindNeighbors(Bcells, reduction = "pcaRNA")
+Bcells <- FindClusters(Bcells, resolution = 1)
+Bcells$Idents1 <- Idents(Bcells)
+```
+
+```{r}
+DimPlot(Bcells, label = TRUE, reduction = "umapRNA", repel = TRUE) + coord_fixed()
+```
+
+## Find Markers
+
+### ROC
+
+```{r RNAmarkers3, eval = FALSE}
+Idents(Bcells) <- "Idents1"
+RNAmarkers <- FindAllMarkers(Bcells, test.use = "roc", assay = "integratedRNA")
+saveRDS(RNAmarkers, "output/Bcells/CelltypeMapping/RNAmarkers_RNAclusters1.rds")
+ADTmarkers <- FindAllMarkers(Bcells, test.use = "roc", assay = "integratedADT", min.pct = 0, logfc.threshold = 0)
+saveRDS(ADTmarkers, "output/Bcells/CelltypeMapping/ADTmarkers_RNAclusters1.rds")
+```
+
+### Log Fold-change
+```{r RNAmarkers4, eval = FALSE}
+Idents(Bcells) <- "Idents1"
+RNAmarkers <- FindAllMarkers(Bcells, assay = "integratedRNA", min.pct = 0.5, logfc.threshold = 0.25)
+saveRDS(RNAmarkers, "output/Bcells/CelltypeMapping/RNAmarkersFC_RNAclusters1.rds")
+ADTmarkers <- FindAllMarkers(Bcells, assay = "integratedADT", min.pct = 0, logfc.threshold = 0)
+saveRDS(ADTmarkers, "output/Bcells/CelltypeMapping/ADTmarkersFC_RNAclusters1.rds")
+```
+
+## Marker Exploration
+```{r}
+downsampled <- subset(Bcells, downsample = 1000)
+Idents(downsampled) <- "Idents1"
+```
+
+### RNA Markers
+```{r}
+RNAmarkersFC <- readRDS(file = "output/Bcells/CelltypeMapping/RNAmarkersFC_RNAclusters1.rds")
+RNAmarkersFC %>% group_by(cluster) %>% top_n(n = 10, wt = avg_log2FC)
+```
+```{r}
+RNAmarkersFC %>% group_by(cluster) %>% top_n(n = 2, wt = avg_log2FC) -> top2
+DoHeatmap(downsampled, features = top2$gene, assay = "integratedRNA", slot = "scale.data") + NoLegend()
+```
+
+### ADT Markers
+```{r}
+DefaultAssay(Bcells) <- "integratedADT"
+ADTmarkersFC <- readRDS(file = "output/Bcells/CelltypeMapping/ADTmarkersFC_RNAclusters1.rds")
+ADTmarkersFC %>% group_by(cluster) %>% top_n(n = 10, wt = avg_log2FC)
+```
+```{r}
+ADTmarkersFC %>% group_by(cluster) %>% top_n(n = 3, wt = avg_log2FC) -> top3
+DoHeatmap(downsampled, features = top3$gene, assay = "integratedADT", slot = "scale.data") + NoLegend()
+```
+```{r}
+# View key markers for known B-cell developmental/functional sub-types
+DotPlot(Bcells, assay = "integratedADT", features = c(".CD23", ".CD24", ".CD10", ".CD38", ".CD95", ".CD43", ".CD86"), cluster = TRUE, dot.scale = 4) + RotatedAxis() + coord_flip()
+```
+
+```{r}
+Idents(Bcells) <- "Idents1"
+DotPlot(Bcells, assay = "integratedRNA", features = c("IGHD", "IGHM", "CD24", "CD1C", "TCL1A", "MME", "CCNB1", "AICDA", "CD27", "CD40", "CD83", "BACH2", "CCR6", "TNFRSF17","IRF4", "PRDM1", "CD38", "FAS", "IGHG1", "CXCR3", "IGKC", "IGLC2"), cluster = TRUE, dot.scale = 4) + RotatedAxis() + coord_flip()
+```
+## Celltype Annotation
+
+0: mCC (no distintive markers)
+1: nNaive (IGHD/IGHM+)
+2: nABC (CD11b+/HSPA1+)
+3: mMCL (CCND1/IGHM+)
+4: mMCL (CCND1/IGHM-)
+5: mMZB (MARCKS+/GPR183+)?
+6: mMB (HSPA1+/IGHG+)
+7: mMB (CD1C/CD39+)
+8: mCC (LMO2/MEF2B+)
+9: mCC MIR155HG+
+10: mABC (NME+): class-switching
+11: mGCB EGR1+
+12: mABC MARCKSL1/LMO2
+13: mGCB Proliferating 1 (Kappa high)
+14: mGCB Proliferating 2 (Kappa low)
+15: mABC CD9+/CD86+
+16: mGCB Proliferating CCNB high
+17: mMB IGHM
+18: mPB (IG high)
+19: nIF (ISG15/IFI6 high)
+20: mGCB TCL1A/MEF2B high
+21: nNaive (same as 1)
+22: mMB (same as 6)
+
+```{r}
+# Full annotations
+Idents(Bcells) <- "integratedRNA_snn_res.1"
+new.cluster.ids <- c("mCC1", "nNaive", "nABC", "mMCL1 (CCND1/IGHM+)", "mMCL2 (CCND1/IGHM-)", "mMZB (MARCKS/GPR183+)", "mMB1 (HSPA1/IGHG+)", "mMB2 (CD1C/CD39+)", "mCC2 (LMO2/MEF2B+)", "mCC3 (MIR155HG+)", "mABC1 (NME+)", "mGCB1 (EGR1+)", "mABC2 (MARCKSL1/LMO2+)", "mProl1 (Kappa+)", "mProl2 (Kappa-)", "mABC3 (CD9/CD86+)", "mProl3 (CCNB+)", "mMB3 (IGHM+)", "mPB", "nIF", "mGCB2 (TCL1A/MEF2B+)", "nNaive", "mMB1 (HSPA1/IGHG+)")
+names(new.cluster.ids) <- levels(Bcells)
+Bcells <- RenameIdents(Bcells, new.cluster.ids)
+Bcells@meta.data$Idents1full <- Idents(Bcells)
+DimPlot(Bcells, reduction = "umapRNA", label = FALSE, pt.size = 0.1) + coord_fixed() + theme(legend.text = element_text(size = 8))
+setwd("/g/huber/users/fitzgerald/R/Workflowr/cite-seq")
+ggsave("papers/Bcells/figures/CelltypeMapping/Idents1fullMapping.pdf")
+```
+```{r}
+# Short annotations
+Idents(Bcells) <- "integratedRNA_snn_res.1"
+new.cluster.ids <- c("mCC1", "nNaive", "nABC", "mMCL1", "mMCL2", "mMZB", "mMB1", "mMB2", "mCC2", "mCC3", "mABC1", "mGCB1", "mABC2", "mProl1", "mProl2", "mABC3", "mProl3", "mMB3", "mPB", "nIF", "mGCB2", "nNaive", "mMB1")
+names(new.cluster.ids) <- levels(Bcells)
+Bcells <- RenameIdents(Bcells, new.cluster.ids)
+Bcells@meta.data$Idents1 <- Idents(Bcells)
+DimPlot(Bcells, reduction = "umapRNA", label = TRUE, label.size = 3.5, pt.size = 0.1, repel = TRUE) + coord_fixed()
+setwd("/g/huber/users/fitzgerald/R/Workflowr/cite-seq")
+ggsave("papers/Bcells/figures/CelltypeMapping/Idents1Mapping.pdf")
+```
+
+```{r, eval = FALSE}
+saveRDS(Bcells, file = "data/SeuratObjects_Int/Combined_B_annotated.rds")
+```
+
+```{r}
+downsampled <- subset(Bcells, downsample = 1000)
+```
+
+```{r, fig.width=10, fig.height=8}
+ADTmarkersFC %>% group_by(cluster) %>% top_n(n = 5, wt = avg_log2FC) -> top5
+DoHeatmap(downsampled, features = top5$gene, assay = "integratedADT", slot = "scale.data", raster = FALSE)
+setwd("/g/huber/users/fitzgerald/R/Workflowr/cite-seq")
+ggsave("papers/Bcells/figures/CelltypeMapping/ADTheatmap2.png")
+```
+
+```{r, fig.width=7, fig.height=8}
+RNAmarkersFC %>% group_by(cluster) %>% top_n(n = 3, wt = avg_log2FC) -> top3
+DoHeatmap(downsampled, features = top3$gene, assay = "integratedRNA", slot = "scale.data", raster = FALSE) + NoLegend()
+setwd("/g/huber/users/fitzgerald/R/Workflowr/cite-seq")
+ggsave("papers/Bcells/figures/CelltypeMapping/RNAheatmap2.png")
+```
+### Subset Distribution Across Samples, Stratified by Entity
+
+```{r, fig.width = 10, fig.height = 4}
+ggplot(Bcells@meta.data, aes(PatientID, fill = Idents(Bcells))) + 
+  geom_bar(position = "fill") +
+  labs(title ="Subset Distribution Across Disease Entities", x = "Sample", y = "Proportion") +
+  facet_grid(cols = vars(Entity), scales = "free") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(size = 6)) +
+  RotatedAxis()
+setwd("/g/huber/users/fitzgerald/R/Workflowr/cite-seq")
+ggsave("papers/Bcells/figures/CelltypeMapping/Subsets_stratified2.pdf")
+```
+
+```{r}
+# View key markers for known B-cell developmental/functional sub-types
+DotPlot(Bcells, assay = "integratedRNA", features = c("IGHD", "IGHM", "CD24", "CD1C", "TCL1A", "MME", "CCNB1", "AICDA", "CD27", "CD40", "CD83", "BACH2", "CCR6", "TNFRSF17","IRF4", "PRDM1", "CD38", "FAS", "IGHG1", "CXCR3", "IGKC", "IGLC2"), cluster = FALSE, dot.scale = 4) + RotatedAxis() + coord_flip()
+setwd("/g/huber/users/fitzgerald/R/Workflowr/cite-seq")
+ggsave("papers/Bcells/figures/CelltypeMapping/Subsets_Dotplot2.pdf")
+```
+
+# Maturation States
+
+```{r}
+DimPlot(Bcells, group.by = "Maturation_M") + coord_fixed()
+```
+## Find Markers
+
+### ROC Test
+```{r Maturation markers, eval = FALSE}
+Idents(Bcells) <- "Maturation_M"
+RNAmarkers <- FindAllMarkers(Bcells, test.use = "roc", assay = "integratedRNA")
+saveRDS(RNAmarkers, "output/Bcells/CelltypeMapping/RNAmarkers_Maturation_M.rds")
+ADTmarkers <- FindAllMarkers(Bcells, test.use = "roc", assay = "integratedADT", min.pct = 0, logfc.threshold = 0)
+saveRDS(ADTmarkers, "output/Bcells/CelltypeMapping/ADTmarkers_Maturation_M.rds")
+```
+
+### Wilcox Test
+```{r Maturation markers 2, eval = FALSE}
+Idents(Bcells) <- "Maturation_M"
+RNAmarkersFC <- FindAllMarkers(Bcells, assay = "integratedRNA")
+saveRDS(RNAmarkersFC, "output/Bcells/CelltypeMapping/RNAmarkersFC_Maturation_M.rds")
+ADTmarkersFC <- FindAllMarkers(Bcells, assay = "integratedADT", min.pct = 0, logfc.threshold = 0)
+saveRDS(ADTmarkersFC, "output/Bcells/CelltypeMapping/ADTmarkersFC_Maturation_M.rds")
+```
+
+## Marker Heatmaps
+
+```{r}
+Idents(Bcells) <- "Maturation_M"
+downsampled <- subset(Bcells, downsample = 1000)
+```
+
+### ADT 
+```{r, fig.width=10, fig.height=8}
+ADTmarkers %>% group_by(cluster) %>% top_n(n = 5, wt = myAUC) -> top5
+DoHeatmap(downsampled, features = top5$gene, assay = "integratedADT", slot = "scale.data", raster = FALSE)
+ggsave("papers/Bcells/figures/CelltypeMapping/ADTheatmapMat.png")
+```
+
+### RNA
+```{r, fig.width=7, fig.height=8}
+RNAmarkers %>% group_by(cluster) %>% top_n(n = 3, wt = myAUC) -> top3
+DoHeatmap(downsampled, features = top3$gene, assay = "integratedRNA", slot = "scale.data", raster = FALSE) + NoLegend()
+ggsave("papers/Bcells/figures/CelltypeMapping/RNAheatmapMat.png")
+```
+
+
+# ADT
+
+## Visualize ADT UMAP
+
+```{r}
+DimPlot(Bcells, reduction = "umapADT", group.by = "PatientID") + coord_fixed()
+DimPlot(Bcells, reduction = "umapADT", group.by = "Run") + coord_fixed()
+DimPlot(Bcells, reduction = "umapADT", group.by = "Entity") + coord_fixed()
+DimPlot(Bcells, reduction = "umapADT", group.by = "Phase") + coord_fixed()
+DimPlot(Bcells, reduction = "umapADT", group.by = "Sex") + coord_fixed()
+DimPlot(Bcells, reduction = "umapADT", group.by = "ADT_snn_res.0.4") + coord_fixed()
+DimPlot(Bcells, reduction = "umapADT", group.by = "integratedADT_snn_res.0.4") + coord_fixed()
+DimPlot(Bcells, reduction = "umapADT", group.by = "integratedRNA_snn_res.0.4") + coord_fixed()
+DimPlot(Bcells, reduction = "umapADT", group.by = "WHOClass") + coord_fixed()
+DimPlot(Bcells, reduction = "umapADT", group.by = "Stage") + coord_fixed()
+DimPlot(Bcells, reduction = "umapADT", group.by = "Survival") + coord_fixed()
+DimPlot(Bcells, reduction = "umapADT", group.by = "DaysFollowup") + coord_fixed()
+DimPlot(Bcells, reduction = "umapADT", group.by = "Status") + coord_fixed()
+DimPlot(Bcells, reduction = "umapADT", group.by = "Karnofsky") + coord_fixed()
+```
+
+## Find Markers
+
+```{r ADTmarkers, eval = FALSE}
+Idents(Bcells) <- "integratedADT_snn_res.0.4"
+RNAmarkers <- FindAllMarkers(Bcells, test.use = "roc", assay = "integratedRNA")
+saveRDS(RNAmarkers, "output/Bcells/CelltypeMapping/RNAmarkers_ADTclusters.rds")
+ADTmarkers <- FindAllMarkers(Bcells, test.use = "roc", assay = "integratedADT", min.pct = 0, logfc.threshold = 0)
+saveRDS(ADTmarkers, "output/Bcells/CelltypeMapping/ADTmarkers_ADTclusters.rds")
+```
+
+## RNA and ADT Clustering Similarity
+
+```{r}
+# ADT clusters on RNA UMAP
+DimPlot(Bcells, reduction = "umapRNA", group.by = "integratedADT_snn_res.0.4")
+# RNA clusters on ADT UMAP
+DimPlot(Bcells, reduction = "umapADT", group.by = "integratedRNA_snn_res.0.4")
+```
+
+# MOFA
+
+## Create MOFA object
+```{r}
+# Load processed and annotated data
+Bcells <- readRDS("data/SeuratObjects_Int/Combined_B_annotated.rds")
+# MOFA object is created without grouping.
+MOFAobject <- create_mofa(Bcells, groups=NULL, assays = c("integratedRNA", "integratedADT"), slot = "data")
+```
+
+## Define MOFA Options
+
+```{r}
+views_names(MOFAobject) <- c("RNA", "ADT")
+data_opts <- get_default_data_options(MOFAobject)
+data_opts
+```
+
+```{r}
+model_opts <- get_default_model_options(MOFAobject)
+model_opts$num_factors <- 30
+model_opts$spikeslab_weights <- FALSE
+model_opts
+```
+
+```{r}
+train_opts <- get_default_training_options(MOFAobject)
+train_opts$convergence_mode <- "slow"
+train_opts$seed <- 23
+train_opts$maxiter <- 1000
+
+train_opts
+```
+
+```{r}
+MOFAobject <- prepare_mofa(MOFAobject,
+  data_options = data_opts,
+  model_options = model_opts,
+  training_options = train_opts
+)
+```
+
+## Train MOFA model
+```{r, eval=FALSE}
+MOFAobject_trained <- run_mofa(MOFAobject, outfile = "output/Bcells/MOFA/MOFA.rds")
+```
+
+```{r}
+MOFAobject_trained <- readRDS("output/Bcells/MOFA/MOFAmeta.rds")
+```
+
+## Factors Overview
+
+### Correlations
+```{r}
+plot_factor_cor(MOFAobject_trained)
+```
+Low cross-correlation indicates non-overlapping factors, indicating good model fit with 30 factors.
+
+### Variance Explained
+```{r}
+plot_variance_explained(MOFAobject_trained, factors = 1:15)
+ggsave("papers/Bcells/figures/MOFA/VarianceExplained.pdf", width = 3, height = 3)
+```
+Most of the variance is captured by the first 3 factors, although minor variance is spread across all of the remaining factors.
+
+```{r}
+plot_variance_explained(MOFAobject_trained, plot_total = T)[[2]]
+```
+More of the ADT variance is captured than of the RNA variance by the MOFA factors. This may be explained by the significantly greater number of RNA features (n=2000).
+
+### Factor Associations
+```{r, eval = FALSE}
+names(Bcells@meta.data)[names(Bcells@meta.data) == "orig.ident"] <- "sample"
+Bcells@meta.data$sample <- MOFAobject_trained@samples_metadata$sample
+samples_metadata(MOFAobject_trained) <- Bcells@meta.data
+```
+
+```{r}
+ggsave("papers/Bcells/figures/MOFA/FactorCorrelations.pdf",
+       plot = correlate_factors_with_covariates(MOFAobject_trained, 
+                                                covariates = c("PatientID", "Run","Phase", "Entity", "Age","Sex", "Survival", "Stage", "Karnofsky", "PTRegimen", "PTResponse", "FTResponse", "FTIndication", "DaysUntilFT", "DaysFollowup", "DaysSincePT", "WHOClass"),
+                                                factors = 30:1,
+                                                plot = "r",
+                                                transpose = FALSE),
+       device = "pdf")
+ggsave("papers/Bcells/figures/MOFA/FactorAssociations.pdf",
+       plot = correlate_factors_with_covariates(MOFAobject_trained, 
+                                                covariates = c("PatientID", "Run","Phase", "Entity", "Age","Sex", "Survival", "Stage", "Karnofsky", "PTRegimen", "PTResponse", "FTResponse", "FTIndication", "DaysUntilFT", "DaysFollowup", "DaysSincePT", "WHOClass"),
+                                                factors = 30:1),
+       device = "pdf")
+```
+```{r, fig.height = 4, fig.width = 4}
+correlate_factors_with_covariates(MOFAobject_trained, 
+                                                covariates = c("PatientID", "Run","Phase", "Entity", "Age","Sex", "Survival", "Stage", "Karnofsky", "PTRegimen", "PTResponse", "FTResponse", "FTIndication", "DaysUntilFT", "DaysFollowup", "DaysSincePT"),
+                                                factors = 15:1,
+                                                plot = "r",
+                                                transpose = FALSE)
+ggsave("papers/Bcells/figures/MOFA/FactorCorrelations.pdf")
+```
+```{r, fig.height = 4, fig.width = 4}
+correlate_factors_with_covariates(MOFAobject_trained, 
+                                                covariates = c("PatientID", "Run","Phase", "Entity", "Age","Sex", "Survival", "Stage", "Karnofsky", "PTRegimen", "PTResponse", "FTResponse", "FTIndication", "DaysUntilFT", "DaysFollowup", "DaysSincePT"),
+                                                factors = 15:1,
+                                                transpose = FALSE) + RotatedAxis()
+ggsave("papers/Bcells/figures/MOFA/FactorAssociations.pdf")
+```
+Greatest factor associations are observed with biological and clinical phenomena like entity, survival and sex than technical variables like sample and run (batch). This indicates the MOFA factors are not heavily influenced by batch effects.
+
+## Factor Exploration
+
+### Factor 1
+```{r}
+plot_top_weights(MOFAobject_trained,
+ view = "RNA",
+ factor = 1,
+ nfeatures = 10,     # Top number of features to highlight
+ scale = F           # Avoid scaling weights to 1/-1
+)
+```
+```{r}
+plot_top_weights(MOFAobject_trained,
+ view = "ADT",
+ factor = 1,
+ nfeatures = 10,     # Top number of features to highlight
+ scale = F           # Avoid scaling weights to 1/-1
+)
+```
+Low Factor 1 relates to mature B-cells (IGKC+)
+High Factor 1 indicates proliferating B-cell populations
+
+```{r}
+plot_factor(MOFAobject_trained, 
+  factors = 1, 
+  color_by = "Entity",
+  dodge = TRUE,
+  add_boxplot = TRUE
+)
+plot_factor(MOFAobject_trained, 
+  factors = 1, 
+  color_by = "Survival",
+  dodge = TRUE,
+  add_boxplot = TRUE
+)
+```
+More proliferating B-cells are present in DLBCL (especially non-GCB), whereas rLN and MZL appear to have more mature B-cells. Proliferating B-cells appear to be associated with death.
+
+### Factor 2
+```{r, fig.width=3, fig.height = 3}
+plot_top_weights(MOFAobject_trained,
+ view = "RNA",
+ factor = 2,
+ nfeatures = 10,     # Top number of features to highlight
+ scale = F           # Avoid scaling weights to 1/-1
+)
+```
+```{r, fig.width=3, fig.height = 3}
+plot_top_weights(MOFAobject_trained,
+ view = "ADT",
+ factor = 2,
+ nfeatures = 10,     # Top number of features to highlight
+ scale = F           # Avoid scaling weights to 1/-1
+)
+```
+
+High Factor 2 appears to represent general low surface protein abundances (mainly CD22, CD21 and Lambda), with high IGKC and MZB1 expression (marginal zone B-cells) and low HLA (MHC), indicating non-antigen presenting state.
+
+```{r, fig.width=3, fig.height = 3}
+
+plot_factor(MOFAobject_trained, 
+  factors = 2, 
+  color_by = "Survival",
+  dodge = TRUE,
+  add_boxplot = TRUE
+)
+```
+Antigen-presenting and IGKC/MZB1+ cells appear to be common across entities. Although APCs appear more common in reactive lymph nodes, and IGKC/MZB1+ cells in MCL (associated with death).
+
+### Factor 3
+```{r}
+plot_top_weights(MOFAobject_trained,
+ view = "RNA",
+ factor = 3,
+ nfeatures = 10,     # Top number of features to highlight
+ scale = F           # Avoid scaling weights to 1/-1
+)
+```
+```{r}
+plot_top_weights(MOFAobject_trained,
+ view = "ADT",
+ factor = 3,
+ nfeatures = 10,     # Top number of features to highlight
+ scale = F           # Avoid scaling weights to 1/-1
+)
+```
+Factor 3 is primarily associated with cell cycle phase
+
+```{r}
+plot_factor(MOFAobject_trained, 
+  factors = 3, 
+  color_by = "Entity",
+  dodge = TRUE,
+  add_boxplot = TRUE
+)
+plot_factor(MOFAobject_trained, 
+  factors = 3, 
+  color_by = "Phase",
+  dodge = TRUE,
+  add_boxplot = TRUE
+)
+plot_factor(MOFAobject_trained, 
+  factors = 3, 
+  color_by = "Survival",
+  dodge = TRUE,
+  add_boxplot = TRUE
+)
+```
+No major differences across entities, phase or survival classes.
+
+### Factor 4
+```{r}
+plot_top_weights(MOFAobject_trained,
+ view = "RNA",
+ factor = 4,
+ nfeatures = 10,     # Top number of features to highlight
+ scale = F           # Avoid scaling weights to 1/-1
+)
+```
+```{r}
+plot_top_weights(MOFAobject_trained,
+ view = "ADT",
+ factor = 4,
+ nfeatures = 10,     # Top number of features to highlight
+ scale = F           # Avoid scaling weights to 1/-1
+)
+```
+Factor 4 points to a STAG3 and MARCKSL1 high class of B-cells positive for CD10 and CD86 (T-cell co-stimulation).
+
+```{r}
+plot_factor(MOFAobject_trained, 
+  factors = 4, 
+  color_by = "Entity",
+  dodge = TRUE,
+  add_boxplot = TRUE
+)
+plot_factor(MOFAobject_trained, 
+  factors = 4, 
+  color_by = "Survival",
+  dodge = TRUE,
+  add_boxplot = TRUE
+)
+plot_factor(MOFAobject_trained, 
+  factors = 4, 
+  color_by = "Stage",
+  dodge = TRUE,
+  add_boxplot = TRUE
+)
+```
+Low factor 4 appears to be associated with poor survival (lack of T-cell stimulation).
+
+### Factor 8
+
+Factor 8 appears to be associated with several treatment-related outcomes.
+```{r, fig.width=3, fig.height = 3}
+plot_top_weights(MOFAobject_trained,
+ view = "RNA",
+ factor = 8,
+ nfeatures = 10,     # Top number of features to highlight
+ scale = F           # Avoid scaling weights to 1/-1
+)
+```
+```{r, fig.width=3, fig.height = 3}
+plot_top_weights(MOFAobject_trained,
+ view = "ADT",
+ factor = 8,
+ nfeatures = 10,     # Top number of features to highlight
+ scale = F           # Avoid scaling weights to 1/-1
+)
+```
+CD69+ (activated), Kappa+/Lambda- and IGHM+ B-cells
+
+```{r}
+plot_factor(MOFAobject_trained, 
+  factors = 8, 
+  color_by = "Entity",
+  dodge = TRUE,
+  add_boxplot = TRUE
+)
+plot_factor(MOFAobject_trained, 
+  factors = 8, 
+  color_by = "Survival",
+  dodge = TRUE,
+  add_boxplot = TRUE
+)
+plot_factor(MOFAobject_trained, 
+  factors = 8, 
+  color_by = "FTIndication",
+  dodge = TRUE,
+  add_boxplot = TRUE
+)
+plot_factor(MOFAobject_trained, 
+  factors = 8, 
+  color_by = "Sex",
+  dodge = TRUE,
+  add_boxplot = TRUE
+)
+```
+
+```{r, fig.width=3, fig.height = 3}
+plot_factor(MOFAobject_trained, 
+  factors = 8, 
+  color_by = "FTResponse",
+  dodge = TRUE,
+  add_boxplot = TRUE
+)
+```
+
+
+plot_factor(MOFAobject_trained, 
+  factors = 8, 
+  color_by = "Stage",
+  dodge = TRUE,
+  add_boxplot = TRUE
+)
+
+These cells are more abundant in MCL, with correspondingly worse outcomes to future treatment.
+
+### View Factor Distributions on UMAP
+```{r, eval = FALSE}
+factors <- 1:get_dimensions(MOFAobject_trained)[["K"]]
+
+MOFAobject_trained <- run_umap(MOFAobject_trained, 
+  factors = factors, 
+  n_neighbors = 15,  
+  min_dist = 0.30
+)
+```
+
+```{r}
+for (i in paste0("Factor",1:8)) {
+  p <- plot_dimred(MOFAobject_trained, 
+    method = "UMAP", 
+    color_by = i, 
+    stroke = 0.05, 
+    dot_size = 0.11
+  ) 
+  print(p)
+}
+```
+```{r, eval=FALSE}
+saveRDS(MOFAobject_trained, file = "output/Bcells/MOFA/MOFAmeta.rds")
+```
+
+# Multi-modal Clustering
+
+## Add MOFA Factors as PCs in Seurat Object
+```{r, eval = FALSE}
+Bcells@reductions$MOFA <- Bcells@reductions[["pcaRNA"]]
+Bcells@reductions$MOFA@key <- 'MOFA_'
+Bcells@reductions$MOFA@cell.embeddings <- MOFAobject_trained@expectations$Z$group1
+rownames(Bcells@reductions$MOFA@cell.embeddings) <- rownames(Bcells@reductions$pcaRNA@cell.embeddings)
+DefaultAssay(Bcells) <- 'integratedRNA'
+```
+
+## Clustering on MOFA Factors
+```{r, eval = FALSE}
+Bcells <- Bcells %>% RunUMAP(dims = 1:30, reduction = "MOFA", reduction.name = "umapMOFA")
+Bcells <- Bcells %>% FindNeighbors(dims=1:30, reduction = "MOFA", graph.name = "MOFA_nn") %>% FindClusters(resolution = 0.5, graph.name = "MOFA_nn")
+Bcells$MOFAclusters_0.5 <- Idents(Bcells)
+Bcells <- FindClusters(Bcells, resolution = 1, graph.name = "MOFA_nn")
+Bcells$MOFAclusters_1 <- Idents(Bcells)
+setwd('/g/huber/users/fitzgerald/R/Workflowr/cite-seq')
+saveRDS(Bcells, file = "data/SeuratObjects_Int/Combined_B_MOFA.rds")
+```
+```{r, eval = FALSE}
+Bcells@assays$RNA <- NULL
+Bcells@assays$ADT <- NULL
+saveRDS(Bcells, file = "/g/huber/users/fitzgerald/R/Workflowr/cite-seqdata/SeuratObjects_Int/Combined_B_analysis.rds")
+```
+
+## Comparison of Clusterings
+```{r, eval = FALSE}
+Bcells <- readRDS("data/SeuratObjects_Int/Combined_B_annotated.rds")
+```
+
+### Visualization
+
+```{r}
+DimPlot(Bcells, group.by = "MOFAclusters_0.5", reduction = "umapMOFA", label = TRUE, repel = TRUE, label.size = 4) + coord_fixed()
+DimPlot(Bcells, group.by = "MOFAclusters_1", reduction = "umapMOFA", label = TRUE, repel = TRUE, label.size = 4) + coord_fixed()
+DimPlot(Bcells, group.by = "PatientID", reduction = "umapMOFA", label = FALSE, repel = TRUE, label.size = 4) + coord_fixed()
+DimPlot(Bcells, group.by = "Run", reduction = "umapMOFA", label = FALSE, repel = TRUE, label.size = 4) + coord_fixed()
+DimPlot(Bcells, group.by = "Entity", reduction = "umapMOFA", label = FALSE, shuffle = TRUE, label.size = 4) + coord_fixed()
+DimPlot(Bcells, group.by = "WHOClass", reduction = "umapMOFA", label = FALSE, shuffle = TRUE, label.size = 4) + coord_fixed()
+DimPlot(Bcells, group.by = "Sex", reduction = "umapMOFA", label = FALSE, shuffle = TRUE, label.size = 4) + coord_fixed()
+DimPlot(Bcells, group.by = "Stage", reduction = "umapMOFA", label = FALSE, shuffle = TRUE, label.size = 4) + coord_fixed()
+DimPlot(Bcells, group.by = "Survival", reduction = "umapMOFA", label = FALSE, shuffle = TRUE, label.size = 4) + coord_fixed()
+DimPlot(Bcells, group.by = "DaysFollowup", reduction = "umapMOFA", label = FALSE, shuffle = TRUE, label.size = 4) + coord_fixed()
+DimPlot(Bcells, group.by = "Status", reduction = "umapMOFA", label = FALSE, shuffle = TRUE, label.size = 4) + coord_fixed()
+DimPlot(Bcells, group.by = "Karnofsky", reduction = "umapMOFA", label = FALSE, shuffle = TRUE, label.size = 4) + coord_fixed()
+DimPlot(Bcells, group.by = "integratedRNA_snn_res.0.4", reduction = "umapMOFA", label = FALSE, shuffle = TRUE, label.size = 4) + coord_fixed()
+DimPlot(Bcells, group.by = "integratedADT_snn_res.0.4", reduction = "umapMOFA", label = FALSE, shuffle = TRUE, label.size = 4) + coord_fixed()
+```
+
+### Find Markers
+```{r MOFAmarkers, eval = FALSE}
+Idents(Bcells) <- "MOFAclusters_0.5"
+RNAmarkers <- FindAllMarkers(Bcells, test.use = "roc", assay = "integratedRNA")
+saveRDS(RNAmarkers, "output/Bcells/CelltypeMapping/RNAmarkers_MOFAclusters.rds")
+ADTmarkers <- FindAllMarkers(Bcells, test.use = "roc", assay = "integratedADT", min.pct = 0, logfc.threshold = 0)
+saveRDS(ADTmarkers, "output/Bcells/CelltypeMapping/ADTmarkers_MOFAclusters.rds")
+```
+
+### Normalized Mutual Information
+
+NMI is a similarity measure the proportion of the entropy of a confusion matrix between two clusterings which is mutual information (ie the dependence of the two clusterings).
+
+```{r}
+library(DescTools)
+# Write a function to calculate the proportion of mutual information between two clusterings
+propMI <- function(x, y) {
+  Entropy <- 2^(Entropy(x = x, y = y, base = 2))
+  MutInf <- 2^(MutInf(x = x, y = y, base = 2))
+  propMI <- MutInf/Entropy
+  print(Entropy)
+  print(MutInf)
+  print(propMI)
+}
+propMI(x = Bcells$integratedRNA_snn_res.0.4, y = Bcells$integratedADT_snn_res.0.4)
+propMI(x = Bcells$MOFAclusters_0.5, y = Bcells$integratedADT_snn_res.0.4)
+propMI(x = Bcells$MOFAclusters_0.5, y = Bcells$integratedRNA_snn_res.0.4)
+```
+
+Low similarity is observed between RNA and ADT clusterings (2.7%).
+
+```{r}
+DimPlot(Bcells, group.by = "Idents1", label = TRUE, repel = TRUE) + coord_fixed() + NoLegend()
+DimPlot(Bcells, group.by = "ADT_snn_res.0.4", label = TRUE, repel = TRUE, reduction = "umapADT") + coord_fixed() + NoLegend()
+DimPlot(Bcells, group.by = "MOFAclusters_1", label = TRUE, repel = TRUE, reduction = "umapMOFA") + coord_fixed() + NoLegend()
+DimPlot(Bcells, group.by = "Idents1", label = TRUE, repel = TRUE, reduction = "umapMOFA") + coord_fixed() + NoLegend()
+DimPlot(Bcells, group.by = "ADT_snn_res.0.4", label = TRUE, repel = TRUE, reduction = "umapMOFA") + coord_fixed() + NoLegend()
+```
+
+```{r}
+# Write a function to calculate the average proportion of mutual information between two clusterings across all samples
+avgMI <- function(data, samples, downsample, x, y) {
+Idents(data) <- samples
+Downsampled <- subset(data, downsample = downsample)
+split <- SplitObject(Downsampled, split.by = "ident")
+pcMI <- list()
+for (i in seq_along(split)){
+  pcMI[i] <- 2^(MutInf(split[[i]][[x]], split[[i]][[y]], base = 2))/2^(Entropy(split[[i]][[x]], split[[i]][[y]], base = 2))
+}
+mean(as.numeric(pcMI), na.rm = TRUE)
+pcMIdf <- pcMI %>% as.numeric(na.rm = TRUE) %>% as.data.frame()
+ggplot(pcMIdf, aes(.)) +
+  geom_density(kernel = "gaussian") +
+  theme_bw() +
+  xlab("proportion information mutual") +
+  ylab("sample density") +
+  geom_vline(xintercept = mean(as.numeric(pcMI), na.rm = TRUE))
+}
+avgMI(Bcells, samples = Bcells$PatientID, downsample = 100, x = 'Idents1', y = 'MOFAclusters_1')
+```
+
+```{r}
+library(ggalluvial)
+Idents(Bcells) <- "MOFAclusters_0.5"
+downsampled <- subset(Bcells, downsample = 100)
+ggplot(downsampled@meta.data, aes(axis1 = Idents0.4, axis2 = MOFAclusters_0.5, axis3 = integratedADT_snn_res.0.4)) +
+  geom_alluvium(aes(fill = MOFAclusters_1), aes.bind=TRUE, width = 1/12) +
+  geom_stratum(width = 1/4, fill = "white", color = "black") +
+  geom_text(stat = "stratum", label.strata = TRUE) +
+  scale_x_discrete(limits = c("RNA clusters", "MOFA clusters", "ADT clusters"),
+                   expand = c(.05, .05)) +
+  labs(y = "Cells") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  ggtitle("RNA vs MOFA vs ADT Clusters")
+ggsave("papers/Bcells/figures/CelltypeMapping/alluvial.jpg")
+```
+
+
+# Additional visualizations
+
+```{r}
+DotPlot(Bcells, assay = "RNA", group.by = "Maturation_M", features = c("IGHD", "IGHM", "CD24", "CD1C", "TCL1A", "GPR183", "MME", "BCL6", 
+                                                                    "CCNB1", "AICDA", "CD27", "CAMK1", "IRKCB", "CD72", "CD20", "PTPN6", 
+                                                                    "CD83", "CXCR5", "EBI3", "BTK", "BLK", "CD74", "BLNK", "CD40", "NFKB1", 
+                                                                    "NFKB2", "TRAF1", "ICAM1", "REL", "RELB", "BACH2", "CCR6", "TNFRSF17",
+                                                                    "IRF4", "XPB1", "PRDM1", "CD38", "FAS", "IGHG1", "IGHA1", "IGHE", 
+                                                                    "CXCR3", "IGLC2", "IGKC"), dot.scale = 2.5, cols = c("blue", "red")) + 
+            RotatedAxis() +
+            coord_flip() +
+            theme(axis.text.y = element_text(size = 8))
+```
+
+```{r}
+colnames(Bcells@meta.data)
+```
+
+```{r, fig.width = 5, fig.height = 5}
+DotPlot(Bcells, group.by = "Idents_res1", assay = "RNA", 
+            features = c("IGHD", "IGHM", "TCL1A", "SELL", 
+                         "CD1C", "PLD4", "MZB1", "SOX4",
+                        "CD27", "KLF2", "CCR7", "IL4R", "CXCR5", 
+                         "MME", "BCL6", "CCNB1", "AICDA", "MYC", 
+                         "CAMK1","IRKCB", "CD72", "MS4A1", "PTPN6", 
+                         "SLA", "FCRL2", "CFLAR", "FOXP1",
+                         "CD83", "EBI3", "BTK", "BLK", "CD74", "BLNK", 
+                         "CD40", "NFKB1", "NFKB2", "TRAF1", "ICAM1", "REL", "RELB", "BACH2", 
+                         "CCR6", "GPR183", 
+                         "TNFRSF17","IRF4", "XPB1", "PRDM1", 
+                         "CD38","FAS", "IGHG1", "IGHA1", "IGHE", "CXCR3", 
+                         "IGLC2","IGKC"), 
+        dot.scale = 6,
+            cols = c("blue", "red")) +
+            theme(axis.text.y = element_text(size = 10)) +
+      RotatedAxis() + coord_flip() + ggtitle("RNA Maturation Marker Profile")
+ggsave("papers/Bcells/figures/CelltypeMapping/Combined_RNADotPlot.pdf")
+```
+```{r, fig.width = 5, fig.height = 5}
+DotPlot(Bcells, group.by = "Idents_res1", assay = "ADT", 
+            features = c(".CD62L", ".CD185", ".CD10", ".CD20", ".CD38", 
+                         ".CD95", ".CD183"), 
+        dot.scale = 6,
+            cols = c("blue", "red")) +
+            theme(axis.text.y = element_text(size = 10)) +
+      RotatedAxis() + coord_flip() + ggtitle("ADT Maturation Marker Profile")
+ggsave("papers/Bcells/figures/CelltypeMapping/Combined_ADTDotPlot.pdf")
+```
+
+```{r}
+VlnPlot(Bcells, assay = "RNA", features = "MYC")
+```
+
+```{r}
+DimPlot(Bcells, group.by = "predicted.Maturation") + coord_fixed()
+FeaturePlot(Bcells, features = "predicted.Maturation.score", cols = c("red", "blue")) + coord_fixed()
+DimPlot(Bcells, group.by = "Maturation_M", label = TRUE, label.size = 4) + coord_fixed() + NoLegend()
+ggsave("papers/Bcells/figures/CelltypeMapping/Combined_Maturation.pdf")
+```
+
+```{r, fig.width = 5, fig.height = 2}
+ggplot(Bcells@meta.data, aes(PatientID, fill = Maturation_M)) + 
+  geom_bar(position = "fill") +
+  labs(title ="Maturation State Distribution Across Samples", x = "Sample", y = "Proportion") +
+  facet_grid(cols = vars(Entity), scales = "free") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(size = 6)) +
+  RotatedAxis()
+ggsave("papers/Bcells/figures/CelltypeMapping/Maturation_stratified.pdf")
+```
