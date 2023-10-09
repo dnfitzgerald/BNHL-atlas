@@ -1,0 +1,307 @@
+---
+title: "Isolation of Tumor Cells based on Kappa-Lambda Profiling"
+author: "Donnacha Fitzgerald"
+date: "2023-03-02"
+output: html_document
+---
+
+The purpose of this script is to isolate malignant cells in tumor samples based on kappa-lambda profiling. Malignant cells are characteristically light chain restricted due to their monoclonality. Clusters with >75% kappa or lambda light chain dominance are considered light chain restricted and therefor considered malignant.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(Seurat)
+library(workflowr)
+library(tidyverse)
+library(RColorBrewer)
+```
+
+# Load Data
+```{r}
+# Load CITE-Seq data from all samples' B cells and associated assays
+Combined <- readRDS("data/Objects/Combined_B_full.rds")
+```
+
+
+```{r}
+# Calculate Kappa-Lambda ratio based on ADT data
+KLR <- function(x) {
+  x$KLR <- x@assays$ADT@counts[".Kappa",]/(x@assays$ADT@counts[".Lambda",] + x@assays$ADT@counts[".Kappa",])
+  return(x)
+}
+Combined <- KLR(Combined)
+```
+
+
+# Visualize light chain restriction
+
+Visualize light chain restriction across several mappings.
+
+## Reference Map
+
+```{r}
+DimPlot(Combined, reduction = "ref.umap", group.by = "predicted.Maturation_fine") + coord_fixed()
+DimPlot(Combined, reduction = "ref.umap", group.by = "Entity", shuffle = TRUE) + coord_fixed()
+```
+
+```{r, fig.width=20, fig.height=50}
+FeaturePlot(Combined, split.by = "PatientID", features = "KLR", reduction = "ref.umap", cols = c("blue", "grey", "red")) + coord_fixed() +
+    patchwork::plot_layout(ncol = 5, nrow = 11)
+```
+
+
+```{r, fig.width = 50, fig.height = 5}
+VlnPlot(Combined, split.by = "PatientID", group.by = "predicted.Maturation_fine", features = "KLR")
+#ggsave("figures/CelltypeMapping/KLR_VlnPlots.pdf", limitsize = FALSE, width = 50, height = 5)
+```
+
+## RNA Clustering
+
+```{r}
+DimPlot(Combined, reduction = "umapRNA", group.by = "Idents_res1", label = TRUE, repel = TRUE) + coord_fixed()
+DimPlot(Combined, reduction = "umapRNA", group.by = "Entity", shuffle = TRUE) + coord_fixed()
+```
+```{r, fig.width = 10, fig.height = 2}
+DimPlot(Combined, split.by = "Entity", group.by = "RNAclusters_res1", reduction = "umapRNA", label = TRUE) + coord_fixed()
+```
+
+```{r, fig.width=20, fig.height=50}
+FeaturePlot(Combined, split.by = "PatientID", features = "KLR", reduction = "umapRNA", cols = c("blue", "grey", "red")) + coord_fixed() +
+    patchwork::plot_layout(ncol = 5, nrow = 11)
+```
+
+```{r, fig.width = 50, fig.height = 5}
+VlnPlot(Combined, split.by = "PatientID", group.by = "Idents_res1", features = "KLR")
+#ggsave("figures/CelltypeMapping/KLR_VlnPlots_RNAclusters.pdf", limitsize = FALSE, width = 50, height = 5)
+```
+
+
+## ADT Clustering
+
+"ADTclusters_res0.4"
+
+```{r}
+DimPlot(Combined, reduction = "umapADT", group.by = "ADTclusters_res0.4", label = TRUE, repel = TRUE) + coord_fixed()
+DimPlot(Combined, reduction = "umapADT", group.by = "Entity", shuffle = TRUE) + coord_fixed()
+```
+
+```{r, fig.width=20, fig.height=50}
+FeaturePlot(Combined, split.by = "PatientID", features = "KLR", reduction = "umapADT", cols = c("blue", "grey", "red")) + coord_fixed() +
+    patchwork::plot_layout(ncol = 5, nrow = 11)
+```
+
+
+```{r, fig.width = 50, fig.height = 5}
+VlnPlot(Combined, split.by = "PatientID", group.by = "ADTclusters_res0.4", features = "KLR")
+#ggsave("figures/CelltypeMapping/KLR_VlnPlots_ADTclusters.pdf", limitsize = FALSE, width = 50, height = 5)
+```
+
+## Multimodal Clustering
+
+
+```{r}
+DimPlot(Combined, reduction = "umapMOFA", group.by = "MOFAclusters_res1", label = TRUE, repel = TRUE) + coord_fixed()
+DimPlot(Combined, reduction = "umapMOFA", group.by = "Entity", shuffle = TRUE) + coord_fixed()
+```
+
+```{r, fig.width=20, fig.height=50}
+FeaturePlot(Combined, split.by = "PatientID", features = "KLR", reduction = "umapMOFA", cols = c("blue", "grey", "red")) + coord_fixed() +
+    patchwork::plot_layout(ncol = 5, nrow = 11)
+```
+
+
+```{r, fig.width = 50, fig.height = 5}
+VlnPlot(Combined, split.by = "PatientID", group.by = "MOFAclusters_res1", features = "KLR")
+#ggsave("figures/CelltypeMapping/KLR_VlnPlots_MOFAclusters.pdf", limitsize = FALSE, width = 50, height = 5)
+```
+# Identify malignant and non-malignant cells in tumor samples
+
+```{r}
+# Remove reactive lymph node samples and remaining object by tumor sample
+Combined <- Combined %>% SplitObject(split.by = "PatientID")
+gc()
+```
+
+RNA clustering is used to distinguish malignant from non-malignant cells as clusters best retain mixed light chain distribution in reactive lymph nodes while clearly showing light chain restriction in malignancy. 
+
+```{r, fig.width = 6, fig.height = 12, warning=FALSE}
+# Plot kappa proportion of each RNA cluster for each sample
+plots <- function(x){
+  DefaultAssay(x) <- "ADT"
+  klr <- FeaturePlot(x, features = "KLR", reduction = "umapRNA", cols = c("blue", "grey", "red")) + 
+    coord_fixed() + 
+    ggtitle(paste0(x$Entity[1], " ", x$PatientID[1]))
+  umap <- DimPlot(x, reduction = "umapRNA", group.by = "RNAclusters_res1", label = TRUE, repel = TRUE) + 
+    coord_fixed() + 
+    ggtitle(paste0(x$Entity[1], " ", x$PatientID[1]))
+  box <- VlnPlot(x, "KLR", group.by = "RNAclusters_res1", sort = TRUE) + 
+stat_summary(fun.y = mean, geom='point', size = 10, colour = "grey", shape = 95) +
+    NoLegend() +
+  geom_hline(yintercept = c(0.25, 0.75), col="darkgreen")
+  klr + umap + box
+}
+lapply(Combined, plots)
+```
+Malignant clusters are considered those with an average kappa proportion >0.75 or <0.25. Clusters which dont meet this threshold are retained when no other cluster in the tumor sample meets this threshold, or when absence of light chain detection (eg for plasma cells or samples where staining has failed).
+```{r, fig.width = 6, fig.height = 5, warning=FALSE}
+# Plot kappa proportion of each RNA cluster for each sample
+plots <- function(x){
+  VlnPlot(x, "KLR", group.by = "RNAclusters_res1", sort = TRUE) + 
+stat_summary(fun.y = mean, geom='point', size = 10, colour = "grey", shape = 95) +
+    NoLegend() +
+  geom_hline(yintercept = c(0.25, 0.75), col="darkgreen")
+}
+lapply(Combined, plots)
+```
+
+```{r}
+SetIdents <- function(x){
+  Idents(x) <- "RNAclusters_res1"
+  return(x)
+}
+Combined <- lapply(Combined, SetIdents)
+
+Idents(Combined$LN0110, cells = WhichCells(Combined$LN0110, idents = c(0, 1, 2, 7))) <- "Normal"
+Idents(Combined$LN0144, cells = WhichCells(Combined$LN0144, idents = c(1, 18, 21))) <- "Normal"
+Idents(Combined$LN0014, cells = WhichCells(Combined$LN0014, idents = c(1, 21))) <- "Normal"
+Idents(Combined$LN0025, cells = WhichCells(Combined$LN0025, idents = c(10))) <- "Normal"
+Idents(Combined$LN0280, cells = WhichCells(Combined$LN0280, idents = c(1, 19))) <- "Normal"
+Idents(Combined$LN0302, cells = WhichCells(Combined$LN0302, idents = c(0, 1, 8, 13, 14, 19, 21))) <- "Normal"
+Idents(Combined$LN0030, cells = WhichCells(Combined$LN0030, idents = c(0, 1, 2, 5, 6, 7, 8, 11, 17, 19, 21))) <- "Normal"
+Idents(Combined$LN0278, cells = WhichCells(Combined$LN0278, idents = c(1, 21))) <- "Normal"
+Idents(Combined$LN0043, cells = WhichCells(Combined$LN0043, idents = c(7, 9, 10), invert = TRUE)) <- "Normal"
+Idents(Combined$LN0188, cells = WhichCells(Combined$LN0188, idents = c(0, 1, 2, 5, 6, 11, 19, 21))) <- "Normal"
+Idents(Combined$LN0251, cells = WhichCells(Combined$LN0251, idents = c(1, 2, 3, 19, 21))) <- "Normal"
+Idents(Combined$LN0078, cells = WhichCells(Combined$LN0078, idents = c(1, 2, 6, 7))) <- "Normal"
+Idents(Combined$LN0273, cells = WhichCells(Combined$LN0273, idents = c(1, 21))) <- "Normal"
+Idents(Combined$LN0285, cells = WhichCells(Combined$LN0285, idents = c(1, 16, 21))) <- "Normal"
+Idents(Combined$LN0135, cells = WhichCells(Combined$LN0135, idents = c(1, 2))) <- "Normal"
+Idents(Combined$LN0193, cells = WhichCells(Combined$LN0193, idents = c(0, 1, 2, 5, 19, 21))) <- "Normal"
+Idents(Combined$LN0166, cells = WhichCells(Combined$LN0166, idents = c(1, 2, 6, 8, 12, 16))) <- "Normal"
+Idents(Combined$LN0178, cells = WhichCells(Combined$LN0178, idents = c(1, 2, 5, 6, 7))) <- "Normal"
+Idents(Combined$LN0176, cells = WhichCells(Combined$LN0176, idents = c(1, 12, 21))) <- "Normal"
+Idents(Combined$LN0265, cells = WhichCells(Combined$LN0265, idents = c(1, 2, 6, 19, 21))) <- "Normal"
+Idents(Combined$LN0266, cells = WhichCells(Combined$LN0266, idents = c(1, 2, 5, 8))) <- "Normal"
+Idents(Combined$LN0272, cells = WhichCells(Combined$LN0272, idents = c(1, 2, 5, 10, 19))) <- "Normal"
+Idents(Combined$LN0217, cells = WhichCells(Combined$LN0217, idents = c(1, 10, 11, 13, 21))) <- "Normal"
+Idents(Combined$LN0262, cells = WhichCells(Combined$LN0262, idents = c(19, 1, 16, 5, 7))) <- "Normal"
+
+# Samples with no distinct light chain restriction population: LN0002 (DLBCL), LN0097 (FL), LN0281 (DLBCL)
+```
+
+```{r}
+# Initialize an empty Seurat object
+Combined_full <- NULL
+
+# Loop through the list of Seurat objects
+for(i in 1:length(Combined)){
+  # If this is the first object, initialize the merged object
+  if (is.null(Combined_full)) {
+    Combined_full <- Combined[[i]]
+  } 
+  # If it's not the first object, merge it with the existing object
+  else {
+    Combined_full <- merge(Combined_full, Combined[[i]])
+  }
+}
+
+```
+
+```{r}
+# Add rLN cells as Normal cells
+Idents(Combined_full, cells = Cells(subset(Combined_full, subset = Entity == "rLN"))) <- "Normal"
+```
+
+```{r}
+# Add remaining cells as malignant cells
+Idents(Combined_full, cells = WhichCells(Combined_full, idents = "Normal", invert = TRUE)) <- "Malignant"
+# Save as a new metadata slot
+Combined_full$Malignant <- Idents(Combined_full)
+```
+
+```{r}
+# save vector of malignancy classification for each cell
+Malignant <- Combined_full$Malignant
+meta <- Combined_full@meta.data
+```
+
+```{r}
+# Reload CITE-Seq object with reductions (before object splitting)
+rm(Combined_full, Combined)
+gc()
+Combined <- readRDS("data/Objects/Combined_B_full.rds")
+```
+
+```{r}
+# Add malignancy label to metadata
+Combined <- AddMetaData(object = Combined, metadata = Malignant, col.name = 'Malignancy')
+```
+
+```{r, fig.width=20, fig.height = 6}
+DimPlot(Combined, group.by = "Malignancy", split.by = "Entity", shuffle = TRUE) + coord_fixed()
+```
+```{r}
+DimPlot(Combined, group.by = "Malignancy", shuffle = TRUE) + coord_fixed()
+```
+
+```{r, fig.width = 7, fig.height = 5}
+VlnPlot(subset(Combined, subset = Malignancy == "Malignant"), features = "KLR", group.by = "PatientID", sort = TRUE) + 
+  stat_summary(fun.y = mean, geom='point', size = 10, colour = "black", shape = 95) +
+    NoLegend()
+```
+```{r, fig.width = 10, fig.height = 5}
+VlnPlot(subset(Combined, subset = Malignancy == "Malignant"), features = "KLR", group.by = "PatientID", sort = TRUE) + 
+  stat_summary(fun.y = mean, geom='point', size = 10, colour = "grey", shape = 95) +
+    NoLegend()
+```
+
+Cells defined as mixed are predominantly malignant
+
+```{r}
+# relabel remaining old idents
+Idents(Combined) <- "Malignancy"
+Combined <- RenameIdents(object = Combined, `Non-malignant` = "Normal", `Mix` = "Malignant", drop = TRUE)
+Combined$Malignancy <- Idents(Combined)
+```
+
+
+```{r}
+saveRDS(Combined, "data/Objects/Combined_B_full.rds")
+```
+
+# Isolate malignant cells
+
+## With reactive lymph node samples
+```{r}
+Malignant_rLN <- subset(Combined, subset = `Malignancy` == "Normal" & `Entity` != "rLN", invert = TRUE)
+gc()
+saveRDS(Malignant_rLN, "data/Objects/Malignant_withrLN.rds")
+```
+
+## On their own
+```{r}
+Malignant <- subset(Malignant_rLN, subset = `Entity` != "rLN")
+gc()
+saveRDS(Malignant, "data/Objects/Malignant.rds")
+```
+
+```{r, fig.width=20, fig.height = 6}
+DimPlot(Malignant, group.by = "Malignancy", split.by = "Entity", shuffle = TRUE) + coord_fixed()
+```
+
+## Slim Down Full Object
+```{r}
+# Reduce unnecessary elements
+Combined <- DietSeurat(
+  Combined,
+  counts = TRUE,
+  data = TRUE,
+  scale.data = TRUE,
+  assays = c('RNA', 'ADT'),
+  dimreducs = c('ref.umap', 'pcaRNA', 'umapRNA', 'pcaADT', 'umapADT', 'MOFA', 'umapMOFA'),
+  graphs = NULL
+)
+saveRDS(Combined, "data/Objects/Combined_B_diet.rds")
+```
