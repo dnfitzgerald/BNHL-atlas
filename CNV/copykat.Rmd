@@ -1,0 +1,134 @@
+---
+title: "Inference of Copy Number Variants in Tumor Cells"
+author: "Donnacha Fitzgerald"
+date: '2023-01-17'
+output: html_document
+---
+
+In this script, we use the copykat R package (Gao et al, 2023) to infer copy number variants from single-cell RNA sequencing data. We apply this to the annotated B-cells from our CITE-Seq dataset.
+
+```{r setup, include=FALSE, eval=TRUE}
+knitr::opts_chunk$set(echo = TRUE, eval = FALSE)
+```
+
+```{r, eval=TRUE}
+library(Seurat)
+library(SeuratObject)
+library(tidyverse)
+library(workflowr)
+library(copykat)
+library(future.apply)
+library(ggpubr)
+```
+
+# Load Data
+
+```{r, eval=TRUE}
+# Load annotated CITE-Seq data from the reactive lymph node B cells reference
+Combined <- readRDS("data/Objects/Combined_B_full.rds") %>% subset(subset = Entity != "rLN")
+gc()
+DefaultAssay(Combined) <- "RNA"
+Idents(Combined) <- "State"
+```
+
+# Run copykat
+
+See https://rdrr.io/github/navinlabcode/copykat/f/vignettes/copycat-vignettes.Rmd for details.
+
+Copykat is run separately for each sample to prevent detection of batch effects. Non-malignant cells are set as normal cells.
+
+```{r, eval=TRUE}
+Samples <- SplitObject(Combined, split.by = "PatientID")
+rm(Combined)
+gc()
+saveRDS(Samples, "data/Objects/MalignantSamples.rds")
+```
+
+```{r, eval=TRUE}
+setwd("output/Bcells/CNV/")
+Runcopykat <- function(x){
+  # Extract raw counts
+  counts <- GetAssayData(x, assay = "RNA", slot = "counts")
+  Name <- x$PatientID[1]
+  set.seed(23)
+  Idents(x) <- "Malignancy"
+  copykat.test <- copykat(rawmat=counts, id.type="S", cell.line="no", norm.cell.names = WhichCells(x, idents = "Normal"), ngene.chr=5, win.size=25, KS.cut=0.2, sam.name=Name, distance="euclidean", n.cores=1, output.seg = TRUE, plot.genes = FALSE)
+  rm(x)
+  saveRDS(copykat.test, file = paste0(Name, ".rds"))
+}
+plan(multisession)
+future_lapply(Samples, Runcopykat, future.seed = 23)
+```
+
+# Add CNV to Seurat objects
+
+```{r, eval = TRUE}
+setwd("output/Bcells/CNV/")
+AddCNV <- function(x){
+  gc()
+  CNA <- data.frame(read.delim(paste0(x$PatientID[1], "_copykat_CNA_results.txt")))
+  pred <- data.frame(read.delim(paste0(x$PatientID[1], "_copykat_prediction.txt")))
+  # Add aneuploidy to metadata
+  pred <- rename(pred, Barcode_full = cell.names)
+  x@meta.data <- left_join(x@meta.data, pred, by = "Barcode_full")
+  rownames(x@meta.data) <- colnames(x[["RNA"]]@counts) # ensure matching cell names
+  # Set rownames to chromosome positions
+  CNA$position <- paste(CNA$chrom, CNA$chrompos, sep = "_")
+  CNV <- CNA %>% column_to_rownames(var="position") %>% subset(select = -c(chrom, chrompos, abspos)) %>% as.data.frame()
+  # Ensure matching cell names as Seurat object
+  counts <- GetAssayData(x, assay = "ADT", layer = "counts") %>% as.data.frame() %>% t() %>% as.data.frame() %>% rownames_to_column()
+  CNV <- CNV %>% as.data.frame() %>% t() %>% as.data.frame() %>% rownames_to_column()
+  matched <- left_join(counts, CNV, by= "rowname") %>% column_to_rownames("rowname")
+  CNV_matched <- matched[, 71:ncol(matched)] %>% t()
+  # create a new assay to store CNV information
+  x[["CNV"]] <- CreateAssayObject(data = CNV_matched)
+  return(x)
+}
+Samples <- lapply(Samples, AddCNV)
+gc()
+```
+
+```{r, eval=TRUE}
+# Set rownames to cell barcodes
+barcode <- function(x){
+  rownames(x@meta.data) <- x$Barcode_full
+  return(x)
+}
+Samples <- lapply(Samples, barcode)
+```
+
+```{r, eval=TRUE}
+# Calculate Kappa-Lambda ratio
+KLR <- function(x) {
+  x$KLR <- x@assays$ADT@counts[".Kappa",]/(x@assays$ADT@counts[".Kappa",] + x@assays$ADT@counts[".Lambda",])
+  return(x)
+}
+Samples <- lapply(Samples, KLR)
+saveRDS(Samples, "data/Objects/List_B_CNV.rds")
+```
+
+# Visualize Ploidy
+
+## UMAP
+```{r, fig.width = 7.5, fig.height = 2.5, warning=FALSE}
+PloidyPlot <- function(x){
+  DefaultAssay(x) <- "CNV"
+  Matplot <- DimPlot(x, reduction = "ref.umap", cols = mathue9, group.by = "predicted.Maturation_course") + xlim(-9,9) + ylim(-9, 9)  + ggtitle(paste0( x$Entity[1], " ", x$PatientID[1], " Maturation States")) + coord_fixed()
+  Ploidy <- DimPlot(x, reduction = "ref.umap", group.by = "copykat.pred")  + xlim(-8,8) + ylim(-8, 8) + ggtitle("Ploidy") + coord_fixed()
+  KLR <- FeaturePlot(x, reduction = "ref.umap", features = "KLR", cols = c("blue", "red"))  + xlim(-8,8) + ylim(-8, 8) + ggtitle("Kappa vs Lambda") + coord_fixed()
+  Plot <- Matplot + Ploidy + KLR
+  ggsave(plot = Plot, file = paste0("figures/CNV/Ploidy/", x$Entity[1], "_", x$PatientID[1], ".pdf"), width = 15, height = 5, useDingbats = TRUE)
+  Plot
+}
+lapply(Samples, PloidyPlot)
+```
+
+# Merge All Samples
+```{r}
+Combined <- merge(x = Samples[[1]], y = c(Samples[[2]], Samples[[3]], Samples[[4]], Samples[[5]], Samples[[6]], Samples[[7]], Samples[[8]], Samples[[9]], Samples[[10]], Samples[[11]], Samples[[12]], Samples[[13]], Samples[[14]], Samples[[15]], Samples[[16]], Samples[[17]], Samples[[18]], Samples[[19]], Samples[[20]], Samples[[21]], Samples[[22]], Samples[[23]], Samples[[24]], Samples[[25]], Samples[[26]], Samples[[27]], Samples[[28]], Samples[[29]], Samples[[30]], Samples[[31]], Samples[[32]], Samples[[33]], Samples[[34]], Samples[[35]], Samples[[36]], Samples[[37]], Samples[[38]], Samples[[39]], Samples[[40]], Samples[[41]], Samples[[42]], Samples[[43]], Samples[[44]], Samples[[45]], Samples[[46]], Samples[[47]], Samples[[48]], Samples[[49]], Samples[[50]], Samples[[51]]), merge.data = TRUE)
+gc()
+```
+
+```{r}
+saveRDS(Combined, "data/Objects/Combined_B_full.rds")
+```
