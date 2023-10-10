@@ -1,0 +1,107 @@
+---
+title: "Add Mapped B cell Annotations to full CODEX object"
+author: "Donnacha Fitzgerald"
+date: "2023-02-16"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+set.seed(23)
+pdf.options(useDingbats = TRUE)
+```
+
+```{r packages}
+library(tidyverse)
+library(Seurat)
+library(SeuratObject)
+library(stringr)
+```
+
+
+See CODEXclustering.Rmd and CITEseqCODEXintegration.Rmd for the prior analyses. In this script, we add the B-cell maturation state annotations to the full CODEX object with all cell types.
+
+# Load Data
+```{r}
+# Load full CODEX object
+obj <- readRDS("data/Objects/CODEX.rds")
+# Load list of objects containing the B cells CODEX data for each sample
+Bcells <- readRDS("data/Objects/CODEX_B_refmap.rds")
+```
+
+# Merge B cell samples
+
+```{r}
+# loop through the objects in the Bcells list, adding them to the merged object
+mergedBcells <- Bcells[[1]]
+for (i in 2:length(Bcells)) {
+  mergedBcells <- merge(mergedBcells, Bcells[[i]])
+}
+
+# save the merged object as an RDS file
+saveRDS(mergedBcells, file = "data/Objects/CODEX_B_refmap_merged.rds")
+```
+
+# Merge reference mapped B cell annotations into the CODEX object
+
+```{r}
+head(obj@meta.data)
+head(mergedBcells@meta.data)
+```
+```{r}
+meta_all <- obj@meta.data
+meta_Bcells <- mergedBcells@meta.data
+```
+
+```{r}
+meta_joined <- left_join(meta_all, meta_Bcells[, c("unique_cell_id", "predicted.Maturation_course2")], by = "unique_cell_id", all.x=TRUE)
+head(meta_joined)
+```
+
+```{r}
+# Use ifelse to replace values in column A with corresponding values in column B
+meta_joined$CellTypes_final <- ifelse(meta_joined$CellTypesDF %in% c("B", "PC"), meta_joined$predicted.Maturation_course2, as.character(meta_joined$CellTypesDF))
+```
+
+```{r}
+obj@meta.data <- meta_joined
+```
+
+```{r}
+Idents(obj) <- "CellTypes_final"
+unique(Idents(obj))
+```
+
+```{r}
+# Add X and Y coordinates as a dimensional reduction
+dims <- function(x){
+  df <- tibble(x@meta.data$x, x@meta.data$y) %>% as.matrix()
+  rownames(df) <- x@meta.data$unique_cell_id
+  colnames(df) <- paste0("coord_", 1:2)
+  x[["coord"]] <- CreateDimReducObject(embeddings = df, key = "coord_", assay = DefaultAssay(x))
+  return(x)
+}
+obj <- dims(obj)
+```
+
+```{r}
+# Add B cell identifier to labels
+obj <- RenameIdents(object = obj, 
+                    `Naïve` = "B Naïve",
+                    `DZ` = "B DZ",
+                    `LZ` = "B LZ",
+                    `MD27` = "B Mem IgM",
+                    `IgG` = "B Mem IgG",
+                    `Plasma` = "B Plasma")
+obj$CellTypes_final <- Idents(obj)
+```
+
+
+```{r}
+saveRDS(obj, file = "data/Objects/CODEX.rds")
+```
+
+```{r, fig.width = 10, fig.height = 10}
+DimPlot(obj, split.by = "dietrich_id", reduction = "coord")
+```
+

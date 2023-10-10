@@ -1,0 +1,326 @@
+---
+title: "B Cell Maturation State Label Transfer from CITE-Seq to CODEX"
+author: "Donnacha Fitzgerald"
+date: "2023-02-28"
+output: html_document
+---
+
+The purpose of this script is to classify B cell maturation states in CODEX data from CITE-Seq the annotations based on the shared features between both datasets. A logistic regression classifier is trained on the normalized and scaled CITE-Seq features (nested cross-validation), and the resulting best model is applied to the normalized and scaled CODEX features from the isolated B cells. 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+set.seed(23)
+```
+
+```{r packages}
+library(tidyverse)
+library(Seurat)
+library(SeuratObject)
+library(stringr)
+library(caret)
+library(questionr)
+```
+
+```{r}
+# Set color palettes
+mathue9 <- c("#ff707c",
+              "#975F24",
+              "#f8d058",
+              "#48edbb",
+              "#006c0b",
+              "#902395")
+```
+
+# Load Data
+
+## CITE-Seq
+
+```{r}
+# Load annotated CITE-Seq data from the B cells across all samples.
+CITEseq_B <- readRDS("data/Objects/Combined_B_refmap.rds")
+DefaultAssay(CITEseq_B) <- "ADT"
+Idents(CITEseq_B) <- "predicted.Maturation_course"
+DimPlot(CITEseq_B, cols = mathue9, reduction = "ref.umap") + coord_fixed()
+```
+
+## CODEX
+```{r}
+# Load codex data from B cells across all images (after CODEXclustering.Rmd)
+CODEX_B <- readRDS("data/Objects/CODEX_B.rds")
+```
+
+# Samplewise Classification
+
+```{r}
+# Extract sample names
+SampleNames <- as.list(unique(CODEX_B$dietrich_id))
+# Split the CODEX B cells object by sample
+CODEX_B <- SplitObject(CODEX_B, split.by = "dietrich_id")
+```
+
+Several machine learning methods, including logistic regression, random forest, gradient boosting decision trees, were first tested on a reactive lymph node sample. As logistic regression showed the highest balanced accuracy in nested cross validation on the CITE-Seq data, and a cleaner visual representation on the lymph node CODEX data, this was pursued on the full dataset.
+
+Random sampling is used to balance classes to improve detection of minority classes (eg. GC or plasma cells).
+
+```{r, results='hide', cache.lazy = FALSE, warning=FALSE, fig.width = 10, fig.height = 8}
+# Main function to map maturation state labels data from CITE-Seq to CODEX data
+refmap <- function(x){
+  # ---- Initialization ----
+  gc()  # Run garbage collection to free up memory
+  
+  # ---- Step 1: Preprocess CITE-Seq Data ----
+  # Subset based on specific PatientID
+  sample <- subset(CITEseq_B, subset = PatientID == sub('..', '', x))
+  
+  # Assign cell identities based on maturation state
+  Idents(sample) <- sample$predicted.Maturation_course
+  
+  # Handle singleton cell types
+  for (i in levels(sample)){
+    if (length(WhichCells(sample, idents = i)) == 1) {
+      Idents(sample)[which(Idents(sample) == i)] = "MD27"
+      sample$predicted.Maturation_course <- Idents(sample)
+    }
+  }
+  
+  # ---- Step 2: Data Scaling ----
+  DefaultAssay(sample) <- "codexfeatures"
+  sample <- ScaleData(sample)
+  
+  # Prepare the data matrices
+  input <- sample@assays$codexfeatures@scale.data %>% as.matrix() %>% t()
+  input[is.na(input)] <- 0
+  output <- sample$predicted.Maturation_course %>% as.factor() %>% droplevels()
+  
+  # ---- Step 3: Model Training ----
+  # Set control parameters for model training
+  trControl <- trainControl(number = 5, search = "random")
+  
+  # Seed setting for reproducibility
+  set.seed(23)
+  
+  # Train the glmnet model
+  glmnet_sample <- nestcv.train(output, input, 
+                                trControl = trControl, 
+                                method = "glmnet",
+                                tuneList = NULL,
+                                continue_on_fail = TRUE,
+                                importance = TRUE,
+                                allowParallel = FALSE,
+                                metric = "Balanced Accuracy",
+                                nthread = 1,
+                                balance = "randomsample")
+  
+  # Save the trained model
+  saveRDS(glmnet_sample, file = paste0("output/Bcells/CelltypeClassification/Samples/", sample$Entity[1], x, "_Maturation_CODEXfeatures_glmnet.rds"))
+  
+  # ---- Step 4: Apply Model to CODEX Data ----
+  # Extract CODEX data for prediction
+  CODEX_B[[x]] <- ScaleData(CODEX_B[[x]])
+  codex_counts <- GetAssayData(CODEX_B[[x]], slot = "scale.data")
+  # Add . to match with citeseq marker nomenclature
+  rownames(codex_counts) <- paste0(".", rownames(codex_counts))
+  # Rename features to match citeseq feature names where appropriate
+  rownames(codex_counts) <- recode(rownames(codex_counts),
+                                   ".lambda" = ".Lambda",
+                                   ".kappa" = ".Kappa",
+                                   ".CD8" = ".CD8a")
+  # subset only features present in CITE-Seq panel
+  test <- codex_counts[rownames(codex_counts) %in% ADTfeatures,] %>% as.matrix() %>% t()
+  # Predicting on CODEX data
+  prediction <- predict(glmnet_sample, newdata = test, verbose = TRUE)
+  CODEX_B[[x]]$predicted.Maturation_course <- prediction
+  # Plot distribution of predicted maturation states within each entity for CITE-Seq and CODEX
+  CODEXplot <- ggplot(CODEX_B[[x]]@meta.data) +
+      geom_bar(aes(x = predicted.Maturation_course, fill = predicted.Maturation_course)) +
+      RotatedAxis() +
+      scale_fill_manual(values = mathue9) +
+      ggtitle(paste0(CODEX_B[[x]]$entity[1], " ", sub('..', '', CODEX_B[[x]]$dietrich_id[1]), " ", "CODEX Maturation States")) +
+    NoLegend() +
+    theme_bw()
+  CITEplot <- ggplot(sample@meta.data) +
+    geom_bar(aes(x = predicted.Maturation_course, fill = predicted.Maturation_course)) +
+      RotatedAxis() +
+      scale_fill_manual(values = mathue9) +
+      ggtitle(paste0(CODEX_B[[x]]$entity[1], " ", sub('..', '', CODEX_B[[x]]$dietrich_id[1]), " ", "CITE-Seq Maturation States")) +
+    NoLegend() +
+    theme_bw()
+  figure <- CITEplot/CODEXplot
+  ggsave(plot = figure, filename = paste0("figures/CelltypeClassification/CODEX/", sample$Entity[1], x, "_MaturationBar_glmnet.pdf"), width = 5, height = 6)
+  # Plot spatial distribution
+  image1 <- ggplot(CODEX_B[[x]]@meta.data) +
+    geom_point(aes(x = Xcorr, y = Ycorr, color = predicted.Maturation_course, alpha = 0.2, stroke = 0.01)) +
+    coord_fixed()  +
+      ggtitle(paste0(CODEX_B[[x]]$entity[1], " ", sub('..', '', CODEX_B[[x]]$dietrich_id[1]), " ", "Predicted Maturation")) +
+      RotatedAxis() +
+      scale_color_manual(values = mathue9) +
+    theme_classic()
+  image2 <- ggplot(CODEX_B[[x]]@meta.data) +
+    geom_point(aes(x = Xcorr, y = Ycorr, color = seurat_clusters, alpha = 0.5, stroke = 0.01)) +
+    coord_fixed()  +
+      ggtitle(paste0(CODEX_B[[x]]$entity[1], " ", sub('..', '', CODEX_B[[x]]$dietrich_id[1]), " ", "Clusters")) +
+      RotatedAxis() +
+    theme_classic()
+  image <- image1/image2
+  ggsave(plot = image, filename = paste0("figures/CelltypeClassification/CODEX/", sample$Entity[1], x, "_MaturationImage_glmnet.pdf"), width = 20, height = 15)
+  return(CODEX_B[[x]])
+}
+CODEX_B <- lapply(SampleNames, refmap)
+saveRDS(CODEX_B, file = "data/Objects/CODEX_B_refmap.rds")
+```
+
+```{r, results='hide', cache.lazy = FALSE, warning=FALSE, fig.width = 10, fig.height = 8}
+# Main function to map reference data from CITE-Seq to CODEX data
+refmap <- function(x) {
+  gc()  # Garbage collection to free up memory
+
+  # ---- Step 1: Preprocess CITE-Seq Data ----
+  sample <- subset(citeseq_all, subset = PatientID == sub('..', '', x))
+  Idents(sample) <- sample$predicted.Maturation_course  # Set cell identities
+  
+  # Handle singleton cell types
+  for (i in levels(sample)) {
+    if (length(WhichCells(sample, idents = i)) == 1) {
+      Idents(sample)[which(Idents(sample) == i)] = "MD27"
+      sample$predicted.Maturation_course <- Idents(sample)
+    }
+  }
+
+  # ---- Step 2: Data Scaling ----
+  DefaultAssay(sample) <- "codexfeatures"
+  sample <- ScaleData(sample)  # Scale data
+  input <- sample@assays$codexfeatures@scale.data %>% as.matrix() %>% t()
+  input[is.na(input)] <- 0
+  output <- sample$predicted.Maturation_course %>% as.factor() %>% droplevels()
+
+  # ---- Step 3: Model Training ----
+  trControl <- trainControl(number = 5, search = "random")  # 5-fold cross-validation
+  set.seed(23)  # Set random seed for reproducibility
+  glmnet_sample <- nestcv.train(output, input, 
+                                trControl = trControl, 
+                                method = "glmnet", 
+                                continue_on_fail = TRUE, 
+                                importance = TRUE, 
+                                balance = "randomsample",
+                                nthread = 1)
+  
+  # Save the model
+  saveRDS(glmnet_sample, file = paste0("output/Bcells/CelltypeClassification/Samples/", sample$Entity[1], x, "_Maturation_CODEXfeatures_glmnet_balanced.rds"))
+  glmnet_sample$summary  # Output model summary
+
+  # ---- Step 4: Apply Model to CODEX Data ----
+  CODEX_B[[x]] <- ScaleData(CODEX_B[[x]])  # Scale CODEX data
+  codex_counts <- GetAssayData(CODEX_B[[x]], slot = "scale.data")
+
+  # Rename features to align with CITE-Seq
+  rownames(codex_counts) <- paste0(".", rownames(codex_counts))  # Add prefix "."
+  rownames(codex_counts) <- recode(rownames(codex_counts), 
+                                   ".lambda" = ".Lambda", 
+                                   ".kappa" = ".Kappa", 
+                                   ".CD8" = ".CD8a")
+
+  # Subset features present in CITE-Seq
+  test <- codex_counts[rownames(codex_counts) %in% ADTfeatures,] %>% as.matrix() %>% t()
+  
+  # Predict on CODEX data
+  prediction <- predict(glmnet_sample, newdata = test, verbose = TRUE)
+  CODEX_B[[x]]$predicted.Maturation_course2 <- prediction
+
+  # ---- Step 5: Visualization ----
+  # Plot distribution of predicted maturation states within each entity for CITE-Seq and CODEX
+  CODEXplot <- ggplot(CODEX_B[[x]]@meta.data) +
+      geom_bar(aes(x = predicted.Maturation_course, fill = predicted.Maturation_course)) +
+      RotatedAxis() +
+      scale_fill_manual(values = mathue9) +
+      ggtitle(paste0(CODEX_B[[x]]$entity[1], " ", sub('..', '', CODEX_B[[x]]$dietrich_id[1]), " ", "CODEX Maturation States")) +
+    NoLegend() +
+    theme_bw()
+  CITEplot <- ggplot(sample@meta.data) +
+    geom_bar(aes(x = predicted.Maturation_course, fill = predicted.Maturation_course)) +
+      RotatedAxis() +
+      scale_fill_manual(values = mathue9) +
+      ggtitle(paste0(CODEX_B[[x]]$entity[1], " ", sub('..', '', CODEX_B[[x]]$dietrich_id[1]), " ", "CITE-Seq Maturation States")) +
+    NoLegend() +
+    theme_bw()
+  figure <- CITEplot/CODEXplot
+  ggsave(plot = figure, filename = paste0("figures/CelltypeClassification/CODEX/", sample$Entity[1], x, "_MaturationBar_glmnet.pdf"), width = 5, height = 6)
+  # Plot spatial distribution
+  image1 <- ggplot(CODEX_B[[x]]@meta.data) +
+    geom_point(aes(x = Xcorr, y = Ycorr, color = predicted.Maturation_course, alpha = 0.2, stroke = 0.01)) +
+    coord_fixed()  +
+      ggtitle(paste0(CODEX_B[[x]]$entity[1], " ", sub('..', '', CODEX_B[[x]]$dietrich_id[1]), " ", "Predicted Maturation")) +
+      RotatedAxis() +
+      scale_color_manual(values = mathue9) +
+    theme_classic()
+  image2 <- ggplot(CODEX_B[[x]]@meta.data) +
+    geom_point(aes(x = Xcorr, y = Ycorr, color = seurat_clusters, alpha = 0.5, stroke = 0.01)) +
+    coord_fixed()  +
+      ggtitle(paste0(CODEX_B[[x]]$entity[1], " ", sub('..', '', CODEX_B[[x]]$dietrich_id[1]), " ", "Clusters")) +
+      RotatedAxis() +
+    theme_classic()
+  image <- image1/image2
+  ggsave(plot = image, filename = paste0("figures/CelltypeClassification/CODEX/", sample$Entity[1], x, "_MaturationImage_glmnet.pdf"), width = 20, height = 15)
+  return(CODEX_B[[x]])
+}
+# ---- Main Execution ----
+CODEX_B <- lapply(SampleNames, refmap)  # Apply the refmap function to each sample
+saveRDS(CODEX_B, file = "data/Objects/CODEX_B_refmap.rds")  # Save processed CODEX data object
+```
+
+
+# Visualizations
+
+## CITE-Seq CODEX Celltype Barcharts
+
+```{r, fig.width = 2, fig.height = 4}
+Barplot <- function(x){
+  # Plot distribution of predicted maturation states within each entity for CITE-Seq and CODEX
+  CODEXplot <- ggplot(x@meta.data) +
+      geom_bar(aes(x = predicted.Maturation_course2, fill = predicted.Maturation_course2)) +
+      RotatedAxis() +
+      scale_fill_manual(values = mathue9) +
+      ggtitle(paste0(x$entity[1], " ", sub('..', '', x$dietrich_id[1]), " ", "CODEX")) +
+    theme_bw() +
+    theme(legend.position = "none",
+          axis.title.x = element_blank(),
+          plot.title = element_text(face="bold", size=12))
+  sample <- subset(CITEseq_B, subset = PatientID == sub('..', '', x$dietrich_id[1]))
+  CITEplot <- ggplot(sample@meta.data) +
+    geom_bar(aes(x = predicted.Maturation_course, fill = predicted.Maturation_course)) +
+      RotatedAxis() +
+      scale_fill_manual(values = mathue9) +
+      ggtitle(paste0(x$entity[1], " ", sub('..', '', x$dietrich_id[1]), " ", "CITE-Seq")) +
+    theme_bw() +
+    theme(legend.position = "none",
+          axis.title.x = element_blank(),
+          plot.title = element_text(face="bold", size=12))
+  CITEplot/CODEXplot
+  ggsave(plot = CITEplot/CODEXplot, filename = paste0("figures/CelltypeClassification/CODEX/", x$entity[1], sub('..', '', x$dietrich_id[1]), "_MaturationBar_glmnet_balanced.pdf"), width = 3, height = 6)
+}
+lapply(CODEX_B, Barplot)
+```
+
+## CITE-Seq CODEX celltype proportion correlations
+
+```{r, fig.width=5, fig.height=4}
+library(ggpubr)
+Matcorr <- function(x){
+  sample <- subset(CITEseq_B, subset = PatientID == sub('..', '', x$dietrich_id[1]))
+  Idents(sample) <- sample$predicted.Maturation_course
+  MatProp <- rbind(table(sample$predicted.Maturation_course)/ncol(sample), table(x$predicted.Maturation_course2)/ncol(x))
+  rownames(MatProp) <- c("CITEseq", "CODEX")
+  MatProp <- t(MatProp) %>% as.data.frame()
+  MatProp$State <- rownames(MatProp) %>% as.factor() %>% factor(levels = c("Naïve", "DZ", "LZ", "MD27", "IgG", "Plasma"))
+  ggplot(data = MatProp) +
+    geom_point(aes(x = CITEseq, y = CODEX, color = State)) +
+    scale_color_manual(values = mathue9) +         
+    xlim(0, 1) +
+    ylim(0, 1) +
+    ggtitle(paste0(x$entity[1], " ", sub('..', '', x$dietrich_id[1]))) +
+    theme_bw() +
+    theme(legend.position = "none") +
+    stat_cor(mapping = aes(x = CITEseq, y = CODEX), p.accuracy = 0.001, r.accuracy = 0.01)
+  ggsave(filename = paste0("figures/CelltypeClassification/CODEX/", x$entity[1], sub('..', '', x$dietrich_id[1]), "_MaturationCorr_glmnet_balanced.pdf"), width = 2, height = 2)
+}
+lapply(CODEX_B, Matcorr)
+```
