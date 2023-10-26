@@ -1,0 +1,164 @@
+---
+title: 'Extended Data Fig. 2: Classification from sorted B-cell maturation states'
+author: "Donnacha Fitzgerald"
+date: "2023-03-27"
+output: html_document
+---
+
+This script generates the figures for Extended Data Fig. 2. It follows the scripts in the Preprocessing and CelltypeMapping folder.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(Seurat)
+library(workflowr)
+library(ggalluvial)
+```
+
+```{r}
+# Set color palette for maturation states
+mathue9 <- c("#ff707c",
+              "#975F24",
+              "#f8d058",
+              "#41d5a8",
+              "#006c0b",
+              "#902395")
+```
+
+# Bulk RNA-Sequencing analysis
+
+See CelltypeMapping/BulkReferences.Rmd for analysis of RNA-seq from sorted maturation states.
+
+```{r}
+# Load DESeq2 object for differential expression analysis of B cell maturation states
+dds <- readRDS(file = "output/Bcells/CelltypeMapping/BulkReference/LNdds2.rds")
+```
+
+## VST
+
+```{r}
+library(DESeq2)
+#Variance stabilization transformation of the raw data
+vst <- vst(dds, blind=F)
+```
+
+## PCA
+### Tissue source
+```{r}
+plotPCA(vst, intgroup=c("Source")) + theme_bw()
+ggsave("figures/Supp2/SourcePCA.pdf")
+```
+### Sample
+```{r}
+plotPCA(vst, intgroup=c("Sample")) + theme_bw()
+ggsave("figures/Supp2/SamplePCA.pdf")
+```
+### Maturation state
+```{r}
+vst$State <- factor(vst$State, 
+                      levels = c("Naïve", "DZ", "LZ", "MD27", "IgG", "Plasma"))
+# Update level names
+levels(vst$State) <- c("Naïve", "DZ", "LZ", "Mem IgM", "Mem IgG", "Plasma")
+plotPCA(vst, intgroup=c("State")) + 
+  scale_color_manual(values=mathue9) +
+  theme_bw() +
+  coord_fixed()
+ggsave("figures/Supp2/StatesPCA.pdf")
+```
+Observations primarily group by state.
+
+# Single-Cell Predicted Maturation States
+```{r}
+# B cells from reactive lymph node samples only (n=8). Maturation state prediction from bulk RNA sequencing profiles is shown in Bulk.
+rLN <- readRDS("data/Objects/rLN.rds")
+```
+
+## Maturation State UMAP
+```{r, fig.width=7, fig.height=7}
+levels(rLN$predicted.Maturation.bulk) <- c("Naïve", "DZ", "LZ", "Mem IgM", "Mem IgG", "Plasma")
+DimPlot(rLN,  
+        group.by = "predicted.Maturation.bulk",
+        cols = mathue9,
+       reduction = "umapRNA") +
+  coord_fixed() +
+  ggtitle("") +
+  labs(x = "UMAP 1", y = "UMAP 2") +
+  theme(axis.text=element_blank(),
+        axis.ticks=element_blank()) +
+  NoLegend()
+ggsave("figures/Supp2/MaturationUMAP.pdf", width = 7, height = 7)
+```
+
+# Maturation Marker Profile Comparison
+
+```{r}
+# Add gene symbols
+genes <- function(x){
+  # First, we split up the rownames of the results object, which contain ENSEMBL gene ids, separated by the plus sign, +. The following code then takes the first id for each gene by invoking the open square bracket function "[" and the argument, 1.
+  x$ensembl <- sapply( strsplit(rownames(x), split="\\+" ), "[", 1 )
+  library( "biomaRt" )
+  ensembl <- useEnsembl(biomart = "ensembl", 
+                   dataset = "hsapiens_gene_ensembl", 
+                   mirror = "useast")
+  genemap <- getBM( attributes = c("ensembl_gene_id", "entrezgene_description", "hgnc_symbol"),
+  filters = "ensembl_gene_id",
+  values = x$ensembl,
+  mart = ensembl )
+  idx <- match( x$ensembl, genemap$ensembl_gene_id )
+  x$entrez <- genemap$entrezgene_description[ idx ]
+  x$hgnc_symbol <- genemap$hgnc_symbol[ idx ]
+  return(x)
+}
+
+samples <- genes(samples)
+# Remove genes without symbols or duplicates
+filtered <- subset(samples, hgnc_symbol != "")
+filtered <- subset(filtered,  duplicated(filtered$hgnc_symbol) == FALSE)
+rownames(filtered) <- filtered$hgnc_symbol
+# remove gene annotation columns
+filtered <- filtered[, 1:40]
+```
+```{r}
+# Create Seurat object of reference data set
+ref <- CreateSeuratObject(counts=filtered, meta.data = as.data.frame(vst@colData@listData))
+# Normalize and Scale Data
+ref <- NormalizeData(ref) %>% ScaleData()
+levels(ref$State) <- c("Naïve", "DZ", "LZ", "Mem IgM", "Mem IgG", "Plasma")
+```
+```{r}
+# Maturation markers from Supplementary Table 3.
+features <- c("IGHD", "IGHM", "TCL1A", "SELL", "CD1C", "CXCR5", 
+                         "MME", "BCL6", "CCNB1", "AICDA", 
+                         "CAMK1", "CD72", "MS4A1", "PTPN6", 
+                         "SLA", "FCRL2", "CFLAR", "FOXP1",
+                         "CD83", "EBI3", "BTK", "BLK", "CD74", "BLNK", 
+                         "CD40", "NFKB1", "NFKB2", "TRAF1", "ICAM1", "REL", "RELB", "BACH2", 
+                         "CCR6", "GPR183", 
+                         "TNFRSF17","IRF4", "PRDM1", 
+                         "CD38","FAS", "IGHG1", "IGHA1", "IGHE", "CXCR3", 
+                         "IGLC2","IGKC")
+# Trimmed down to key state-distinguishing features
+features3 <- c("IGHD", "SELL",
+                "MME", "BCL6", "CCNB1", "AICDA", 
+                "CD40", "NFKB2", "CD83", "EBI3", 
+                "CCR6", "GPR183",
+                "IGHM", "IGHG1", "IGHA1",
+               "TNFRSF17","IRF4", "PRDM1")
+```
+
+```{r, fig.width = 2.5, fig.height = 4.5}
+Idents(rLN) <- "predicted.Maturation.bulk"
+combined_averages <- AverageExpression(rLN, return.seurat = TRUE) 
+DoHeatmap(combined_averages, features = features3, label = FALSE, 
+          draw.lines = FALSE, group.colors = mathue9, raster = FALSE)   +
+    scale_fill_gradient2(low = "darkblue", mid = "white", high = "darkred", midpoint = 0) +
+  guides(color="none") +
+  theme(legend.key.size = unit(0.4, 'cm'), #change legend key size
+        legend.text = element_text(size=7),
+        legend.title = element_text(size=8)) #change legend title font size 
+ggsave("figures/Supp2/Heatmap_predicted.pdf", width = 2.5, height = 4.5)
+```
+

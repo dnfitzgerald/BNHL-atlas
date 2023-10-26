@@ -1,0 +1,454 @@
+---
+title: 'Figure 3: Cell-of-origin classification reveals multiple subtypes within each tumor'
+author: "Donnacha Fitzgerald"
+date: "2023-03-28"
+output: html_document
+---
+
+This script generates the plots shown in Figure 3. It follows the analyses in the Preprocessing/ and CelltypeAnnotation/ folders.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(Seurat)
+library(patchwork)
+```
+
+```{r}
+# Set color palette for maturation states
+mathue9 <- c("#ff707c",
+              "#975F24",
+              "#f8d058",
+              "#41d5a8",
+              "#006c0b",
+              "#902395")
+
+mathue10 <- c("#975F24",
+              "#f8d058",
+              "#41d5a8",
+              "#006c0b",
+              "#902395")
+```
+
+# DLBCL COO Classification
+
+Load malignant cells from all DLBCL samples
+```{r}
+DLBCL <- readRDS("data/Objects/Combined_B_diet.rds") %>% subset(Entity == c("DLBCL, GCB", "DLBCL, non-GCB") & Malignancy == "Malignant")
+```
+
+## Tally Classifier
+
+We apply the Tally GCB vs ABC DLBCL cell-of-origin classifier described in the below publication to our single-cell data.
+
+Meyer, P. N. et al. Immunohistochemical methods for predicting cell of origin and survival in patients with diffuse large B-cell lymphoma treated with rituximab. J. Clin. Oncol. 29, 200–207 (2011).
+
+It assigns cell-of-origin based on the following algorithm:
+
+(CD10 + GCET1 (+ LMO2)) > (MUM1+FOXP1) -> GCB
+(MUM1+FOXP1) < (CD10 + GCET1 (+ LMO2)) -> Non-GCB
+
+Values are obtained from the gene expression counts because surface epitopes are not measured for some of these markers in our CITE-Seq dataset.
+
+We convert the specified markers to ensembl nomenclature to match our transcriptomic features:
+
+CD10 = MME
+GCET1 = SERPINA9
+LMO2 = LMO2
+MUM1 = IRF4
+FOXP1 = FOXP1
+
+```{r}
+# Binarize gene expression
+seurat_obj_bin <- DLBCL[["RNA"]]@counts
+# Define a threshold of 1
+threshold <- 1
+# Binarize the expression values
+seurat_obj_bin <- as.matrix(seurat_obj_bin)
+seurat_obj_bin[seurat_obj_bin >= threshold] <- 1
+seurat_obj_bin[seurat_obj_bin < threshold] <- 0
+# Create a new assay with binary values
+binary_assay <- CreateAssayObject(counts = seurat_obj_bin)
+# Add the binary assay to the original Seurat object
+DLBCL[["binary"]] <- binary_assay
+```
+
+```{r}
+# Calculate Tally GCB and ABC scores
+Tally <- function(x){
+  x$Tally_GCB <- x@assays$binary@data["MME",] + x@assays$binary@data["SERPINA9",]
+  x$Tally_ABC <- x@assays$binary@data["IRF4",] + x@assays$binary@data["FOXP1",]
+  x$Tally <- x$Tally_GCB - x$Tally_ABC
+  return(x)
+}
+# View Tally scores by state
+DLBCL <- Tally(DLBCL)
+FeaturePlot(DLBCL, split.by = "Entity", features = "Tally", reduction = "ref.umap") + coord_fixed() +
+    scale_color_gradientn(colours = c('blue', 'grey', 'red'),  limits = c(0, 1))
+TallyVln <- VlnPlot(DLBCL, features = "Tally", group.by = "State", cols = mathue9, add.noise = TRUE)  + 
+  stat_summary(fun = median, geom='point', size = 15, colour = "blue", shape = 95) +
+  ggtitle("Tally Score by State") +
+  NoLegend() +
+  labs(x = "State", y = "Tally Score")
+TallyVln
+```
+
+```{r}
+# Classify with the Tally GCB-ABC score threshold of 0
+Idents(DLBCL) <- "Unclassified"
+Idents(DLBCL, cells = WhichCells(DLBCL, expression = Tally >= 0)) <- "GCB" # Higher GCB score
+Idents(DLBCL, cells = WhichCells(DLBCL, expression = Tally < 0)) <- "Non-GCB" # Higher ABC score
+# Cells with a score of 0 are assigned to GCB only if LMO2 is expressed. Otherwise they are considered unclassified.
+Idents(DLBCL, cells = WhichCells(DLBCL, expression = Tally == 0 & LMO2 == 0)) <- "Unclassified"
+DLBCL$TallyClass <- Idents(DLBCL) %>% factor(levels = c("GCB", "Unclassified", "Non-GCB"))
+```
+
+### Tally Class Barcharts
+
+```{r, fig.height = 4, fig.width = 4}
+Tally <- ggplot(DLBCL@meta.data, aes(x = SampleID, fill = TallyClass)) +
+  geom_bar(position = "fill") + 
+  ggtitle("Tally Classification by DLBCL Sample") +
+  RotatedAxis() +
+  theme_minimal() +
+  theme(legend.position = "right", 
+        plot.title = element_text(hjust = 0.5), 
+        axis.text = element_blank()) +
+  ylab("Proportion") +
+  xlab("DLBCL Sample") +
+  scale_fill_manual(values = c("seagreen", "black", "darkgoldenrod")) +
+    facet_grid(cols = vars(Entity), scales = "free", space = "free")
+ggsave("figures/Figure3/Tally.pdf", width = 4, height = 4)
+```
+
+## Lymph2Cx COO Classifier
+
+DLBCL cell-of-origin classification in single cells using the Lymph2Cx gene expression classifier based on expression of 20 target genes as per the following publication:
+
+Scott, D. W. et al. Determining cell-of-origin subtypes of diffuse large B-cell lymphoma using gene expression in formalin-fixed paraffin-embedded tissue. Blood 123, 1214–1217 (2014).
+
+```{r}
+# Define gene sets for Lymph2Cx classifier
+ABC_genes <- c("TNFRSF13B", "LIMD1", "IRF4", "CREB3L2", "PIM2", "CYB5R2", "RAB29", "CCDC50")
+
+GCB_genes <- c("MME", "SERPINA9", "ASB13", "MAML3", "ITPKB", "MYBL1", "S1PR2")
+
+# Define housekeeping genes for Lymph2Cx classifier
+housekeeping_genes <- c("R3HDM1", "WDR55", "ISY1", "UBXN4", "TRIM56")
+
+# Calculate normalized module scores
+normalized_module_score <- function(seurat_obj, target_genes, control_genes, name_prefix) {
+  seurat_obj <- AddModuleScore(seurat_obj, features = list(target_genes), name = paste0(name_prefix, "_target_score"))
+  seurat_obj <- AddModuleScore(seurat_obj, features = list(control_genes), name = paste0(name_prefix, "_control_score"))
+  seurat_obj[[paste0(name_prefix, "_normalized_score")]] <- seurat_obj[[paste0(name_prefix, "_target_score1")]] - seurat_obj[[paste0(name_prefix, "_control_score1")]]
+  return(seurat_obj)
+}
+
+# Calculate normalized module scores for GCB and ABC gene sets
+DLBCL <- normalized_module_score(DLBCL, GCB_genes, housekeeping_genes, "GCB")
+DLBCL <- normalized_module_score(DLBCL, ABC_genes, housekeeping_genes, "ABC")
+```
+
+
+```{r}
+# VlnPlot of GCB and ABC scores
+VlnPlot(DLBCL, features = c("GCB_normalized_score", "ABC_normalized_score"), group.by = "State")
+VlnPlot(DLBCL, features = c("GCB_target_score1", "ABC_target_score1"), group.by = "State")
+VlnPlot(DLBCL, features = c("GCB_control_score1", "ABC_control_score1"), group.by = "State")
+```
+### GCB vs ABC Score Scatter Plot
+
+```{r, fig.width=5, fig.height=5}
+# View Score Distributions by Maturation State
+FeatureScatter(DLBCL, feature1 = "GCB_normalized_score", feature2 = "ABC_normalized_score", group.by = "State", cols = mathue9) +
+  coord_fixed() +
+  xlim(-1, 1.5) +
+  ylim(-1, 1.5) +
+  labs(x = "GCB Score", y = "ABC Score") +
+  ggtitle("Lymph2Cx Scores by State") +
+  guides(color=guide_legend(title="State")) +
+  geom_abline(xintercept = 0, yintercept = 0) +
+    theme(legend.position = c(0.75, 0.8),
+        legend.box.background=element_rect("white"),
+        legend.box.margin=margin(5,5,5,5),
+        plot.title = element_text(face = "plain"))
+ggsave("figures/Figure3/Lymph2Cx_scatter.pdf", width = 5, height = 5)
+```
+
+```{r}
+DLBCL$Lymph2Cx_combined_score <- DLBCL$GCB_normalized_score - DLBCL$ABC_normalized_score
+```
+
+```{r}
+# Add COO subtype assignments to metadata
+DLBCL$COO_subtype <- ifelse(DLBCL$GCB_normalized_score > DLBCL$ABC_normalized_score, "GCB", "non-GCB")
+Idents(object = DLBCL, cells = WhichCells(DLBCL, expression = GCB_normalized_score > ABC_normalized_score)) <- "GCB"
+Idents(object = DLBCL, cells = WhichCells(DLBCL, expression = ABC_normalized_score > GCB_normalized_score)) <- "ABC"
+Idents(object = DLBCL, cells = WhichCells(DLBCL, expression = ABC_normalized_score < 0 & GCB_normalized_score < 0)) <- "Unclassified"
+DLBCL$Lymph2Cx_Class <- factor(Idents(DLBCL), levels = c("GCB", "Unclassified", "ABC"))
+```
+
+## Comparison of Tally and Lymph2Cx
+```{r, fig.height = 8, fig.width = 4}
+# Bar plot of Lymph2Cx classification by sample
+Tally_bar <- ggplot(DLBCL@meta.data, aes(x = reorder(SampleID, as.numeric(DaysDiagnosed)), fill = TallyClass)) +
+  geom_bar(position = "fill") + 
+  ggtitle("Tally DLBCL COO") +
+  RotatedAxis() +
+  theme_minimal() +
+  theme(legend.position = "right", 
+        plot.title = element_text(hjust = 0.5, size = 12), 
+        legend.title = element_text(size = 9), 
+        legend.text = element_text(size = 8),
+        axis.title.x = element_text(hjust = 0.5), 
+        axis.text.x = element_text(angle=45, size = 7),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank()) +
+  ylab("Tally Class Proportions") +
+  xlab("DLBCL Sample") +
+    scale_fill_manual(values = c("darkgoldenrod", "black", "seagreen")) +
+    facet_grid(cols = vars(Entity), scales = "free", space = "free") + 
+  guides(fill=guide_legend(title="Tally Class"))
+
+# Bar plot of Lymph2Cx classification by sample
+Lymph2Cx_bar <- ggplot(DLBCL@meta.data, aes(x = reorder(SampleID, as.numeric(DaysDiagnosed)), fill = Lymph2Cx_Class)) +
+  geom_bar(position = "fill") + 
+  ggtitle("Lymph2Cx DLBCL COO") +
+  RotatedAxis() +
+  theme_minimal() +
+  theme(legend.position = "right", 
+        plot.title = element_text(hjust = 0.5, size = 12), 
+        legend.title = element_text(size = 9), 
+        legend.text = element_text(size = 8),
+        axis.title.x = element_text(hjust = 0.5), 
+        axis.text.x = element_text(angle=45, size = 7),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank()) +
+  ylab("Lymph2Cx Class Proportions") +
+  xlab("DLBCL Sample") +
+    scale_fill_manual(values = c("darkgoldenrod", "black", "seagreen")) +
+    facet_grid(cols = vars(Entity), scales = "free", space = "free")+ 
+  guides(fill=guide_legend(title="Lymph2Cx Class"))
+
+patchwork <- Lymph2Cx_bar/Tally_bar
+patchwork
+
+ggsave("figures/Figure3/COO_barcharts.pdf", plot = patchwork, width = 3.8, height = 8)
+```
+
+# FL COO Classification
+
+The Tally and Lymph2Cx classifers are similarly applied to FL samples.
+
+```{r}
+# isolate FL cells
+FL <- readRDS("data/Objects/Combined_B_diet.rds") %>% subset(Entity == "FL" & Malignancy == "Malignant")
+```
+
+## Tally Classifier
+
+```{r}
+# Binarize gene expression
+seurat_obj_bin <- as.matrix(FL[["RNA"]]@counts)
+# Define a threshold of 1
+threshold <- 1
+# Binarize the expression values
+seurat_obj_bin[seurat_obj_bin >= threshold] <- 1
+seurat_obj_bin[seurat_obj_bin < threshold] <- 0
+# Create a new assay with binary values
+FL[["binary"]] <- CreateAssayObject(counts = seurat_obj_bin)
+```
+
+```{r}
+# Calculate Tally score
+Tally <- function(x){
+  x$Tally_GCB <- x@assays$binary@data["MME",] + x@assays$binary@data["SERPINA9",]
+  x$Tally_ABC <- x@assays$binary@data["IRF4",] + x@assays$binary@data["FOXP1",]
+  x$Tally <- x$Tally_GCB- x$Tally_ABC
+  return(x)
+}
+FL <- Tally(FL)
+FeaturePlot(FL, split.by = "Entity", features = "Tally", reduction = "ref.umap") + coord_fixed() +
+    scale_color_gradientn(colours = c('blue', 'grey', 'red'),  limits = c(0, 1))
+VlnPlot(FL, features = "Tally", group.by = "predicted.Maturation_course")  + 
+  stat_summary(fun = mean, geom='point', size = 10, colour = "red", shape = 95)
+```
+
+```{r}
+# Classify with the 0 Tally score threshold
+Idents(FL) <- "Unclassified"
+Idents(FL, cells = WhichCells(FL, expression = Tally >= 0)) <- "GCB"
+Idents(FL, cells = WhichCells(FL, expression = Tally < 0)) <- "Non-GCB"
+Idents(FL, cells = WhichCells(FL, expression = Tally == 0 & LMO2 == 0)) <- "Unclassified"
+FL$TallyClass <- Idents(FL) %>% factor(levels = c("GCB", "Unclassified", "Non-GCB"))
+```
+
+
+### Tally Class Bar Chart
+```{r, fig.height = 4, fig.width = 4}
+Tally <- ggplot(FL@meta.data, aes(x = SampleID, fill = TallyClass)) +
+  geom_bar(position = "fill") + 
+  ggtitle("Tally Classification by FL Sample") +
+  RotatedAxis() +
+  theme_minimal() +
+  theme(legend.position = "right", 
+        plot.title = element_text(hjust = 0.5), 
+        axis.text = element_blank()) +
+  ylab("Proportion") +
+  xlab("FL Sample") +
+  scale_fill_manual(values = c("seagreen", "black", "darkgoldenrod")) +
+    facet_grid(cols = vars(Entity), scales = "free", space = "free")
+Tally
+#ggsave("figures/Figure3/Tally_FL.pdf", width = 4, height = 4)
+```
+
+## Lymph2Cx COO Classifier
+
+FL cell-of-origin classification in single cells using the Lymph2Cx gene expression classifier based on expression of 20 target genes.
+
+```{r}
+# Define gene sets for Lymph2Cx classifier
+ABC_genes <- c("TNFRSF13B", "LIMD1", "IRF4", "CREB3L2", "PIM2", "CYB5R2", "RAB29", "CCDC50")
+
+GCB_genes <- c("MME", "SERPINA9", "ASB13", "MAML3", "ITPKB", "MYBL1", "S1PR2")
+
+# Define housekeeping genes for Lymph2Cx classifier
+housekeeping_genes <- c("R3HDM1", "WDR55", "ISY1", "UBXN4", "TRIM56")
+
+# Custom function to calculate normalized module scores
+normalized_module_score <- function(seurat_obj, target_genes, control_genes, name_prefix) {
+  seurat_obj <- AddModuleScore(seurat_obj, features = list(target_genes), name = paste0(name_prefix, "_target_score"))
+  seurat_obj <- AddModuleScore(seurat_obj, features = list(control_genes), name = paste0(name_prefix, "_control_score"))
+  seurat_obj[[paste0(name_prefix, "_normalized_score")]] <- seurat_obj[[paste0(name_prefix, "_target_score1")]] - seurat_obj[[paste0(name_prefix, "_control_score1")]]
+  return(seurat_obj)
+}
+
+# Calculate normalized module scores for GCB and ABC gene sets
+FL <- normalized_module_score(FL, GCB_genes, housekeeping_genes, "GCB")
+FL <- normalized_module_score(FL, ABC_genes, housekeeping_genes, "ABC")
+```
+
+### GCB and ABC Scatter Plot
+
+```{r, fig.width=5, fig.height=5}
+# View Score Distributions by Maturation State
+FeatureScatter(FL, feature1 = "GCB_normalized_score", feature2 = "ABC_normalized_score", group.by = "State", cols = mathue9) +
+  coord_fixed() +
+  xlim(-1, 1.5) +
+  ylim(-1, 1.5) +
+  labs(x = "GCB Score", y = "ABC Score") +
+  ggtitle("Lymph2Cx Scores by State") +
+  guides(color=guide_legend(title="State")) +
+  geom_abline(xintercept = 0, yintercept = 0) +
+    theme(legend.position = c(0.75, 0.8),
+        legend.box.background=element_rect("white"),
+        legend.box.margin=margin(5,5,5,5),
+        plot.title = element_text(face = "plain"))
+#ggsave("figures/Figure3/Lymph2Cx_scatter.pdf", width = 5, height = 5)
+```
+
+```{r}
+# Add COO subtype assignments to metadata
+FL$COO_subtype <- ifelse(FL$GCB_normalized_score > FL$ABC_normalized_score, "GCB", "non-GCB")
+Idents(object = FL, cells = WhichCells(FL, expression = GCB_normalized_score > ABC_normalized_score)) <- "GCB"
+Idents(object = FL, cells = WhichCells(FL, expression = ABC_normalized_score > GCB_normalized_score)) <- "ABC"
+Idents(object = FL, cells = WhichCells(FL, expression = ABC_normalized_score < 0 & GCB_normalized_score < 0)) <- "Unclassified"
+FL$Lymph2Cx_Class <- factor(Idents(FL), levels = c("GCB", "Unclassified", "ABC"))
+```
+
+## Comparison of Tally and Lymph2Cx
+
+```{r, fig.height = 8, fig.width = 4}
+# Bar plot of Lymph2Cx classification by sample
+Tally_bar <- ggplot(DLBCL@meta.data, aes(x = reorder(SampleID, as.numeric(DaysDiagnosed)), fill = TallyClass)) +
+  geom_bar(position = "fill") + 
+  ggtitle("Tally DLBCL COO") +
+  RotatedAxis() +
+  theme_minimal() +
+  theme(legend.position = "right", 
+        plot.title = element_text(hjust = 0.5, size = 12), 
+        legend.title = element_text(size = 9), 
+        legend.text = element_text(size = 8),
+        axis.title.x = element_text(hjust = 0.5), 
+        axis.text.x = element_text(angle=45, size = 7),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank()) +
+  ylab("Tally Class Proportions") +
+  xlab("DLBCL Sample") +
+    scale_fill_manual(values = c("darkgoldenrod", "black", "seagreen")) +
+    facet_grid(cols = vars(Entity), scales = "free", space = "free") + 
+  guides(fill=guide_legend(title="Tally Class"))
+
+# Bar plot of Lymph2Cx classification by sample
+Lymph2Cx_bar <- ggplot(DLBCL@meta.data, aes(x = reorder(SampleID, as.numeric(DaysDiagnosed)), fill = Lymph2Cx_Class)) +
+  geom_bar(position = "fill") + 
+  ggtitle("Lymph2Cx DLBCL COO") +
+  RotatedAxis() +
+  theme_minimal() +
+  theme(legend.position = "right", 
+        plot.title = element_text(hjust = 0.5, size = 12), 
+        legend.title = element_text(size = 9), 
+        legend.text = element_text(size = 8),
+        axis.title.x = element_text(hjust = 0.5), 
+        axis.text.x = element_text(angle=45, size = 7),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank()) +
+  ylab("Lymph2Cx Class Proportions") +
+  xlab("DLBCL Sample") +
+    scale_fill_manual(values = c("darkgoldenrod", "black", "seagreen")) +
+    facet_grid(cols = vars(Entity), scales = "free", space = "free")+ 
+  guides(fill=guide_legend(title="Lymph2Cx Class"))
+
+patchwork <- Lymph2Cx_bar/Tally_bar
+patchwork
+
+ggsave("figures/Figure3/COO_barcharts.pdf", plot = patchwork, width = 3.8, height = 8)
+```
+
+# DLBCL and FL Combined
+```{r}
+Combined <- merge(DLBCL, y = FL)
+Combined$State <- factor(Combined$State, levels = c("Naïve", "DZ", "LZ", "Mem IgM", "Mem IgG", "Plasma"))
+Idents(Combined) <- "State"
+```
+
+## Lymph2Cx Scores by Maturation State
+```{r, fig.width=5, fig.height=5}
+# View Score Distributions by Tally Class
+FeatureScatter(Combined, feature1 = "GCB_normalized_score", feature2 = "ABC_normalized_score", group.by = "State", cols = mathue9, pt.size = 0.1, shuffle = TRUE) +
+  coord_fixed() +
+  xlim(-1, 1.5) +
+  ylim(-1, 1.5) +
+  labs(x = "GCB Score", y = "ABC Score") +
+  ggtitle("Lymph2Cx Scores by State") +
+  guides(color=guide_legend(title="State")) +
+  geom_abline(xintercept = 0, yintercept = 0) +
+    theme(legend.position = c(0.75, 0.8),
+        legend.box.background=element_rect("white"),
+        legend.box.margin=margin(5,5,5,5),
+        plot.title = element_text(face = "plain"))
+ggsave("figures/Figure3/Lymph2CxScatter.pdf", width = 5, height = 5)
+```
+
+## Lymph2Cx Scores by Tally Class
+```{r, fig.width=5, fig.height=5}
+# View Score Distributions by Maturation State
+FeatureScatter(Combined, feature1 = "GCB_normalized_score", feature2 = "ABC_normalized_score", group.by = "TallyClass", cols = c("darkgoldenrod", "seagreen", "black"), shuffle = TRUE, pt.size = 0.1) +
+  coord_fixed() +
+  xlim(-1, 1.5) +
+  ylim(-1, 1.5) +
+  labs(x = "GCB Score", y = "ABC Score") +
+  ggtitle("Lymph2Cx Scores by Tally Class") +
+  guides(color=guide_legend(title="Tally Class")) +
+  geom_abline(xintercept = 0, yintercept = 0) +
+    theme(legend.position = c(0.75, 0.8),
+        legend.box.background=element_rect("white"),
+        legend.box.margin=margin(5,5,5,5),
+        plot.title = element_text(face = "plain"))
+ggsave("figures/Figure3/Lymph2Cx_Tally_Scatter.pdf", width = 5, height = 5)
+```
+
+

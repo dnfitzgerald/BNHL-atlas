@@ -1,0 +1,121 @@
+---
+title: "Fig. 1: A single-cell B-cell maturation reference map in reactive lymph nodes"
+author: "Donnacha Fitzgerald"
+date: "2023-03-15"
+output: html_document
+---
+
+This script was used to generate plots for Fig.1. It follows the scripts in the Preprocessing and CelltypeMapping folders.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+``` 
+
+```{r}
+library(tidyverse)
+library(Seurat)
+library(SeuratWrappers)
+library(questionr)
+library(caret)
+library(readxl)
+library(reader)
+library(pheatmap)
+```
+
+```{r}
+# Set color palette for maturation states
+mathue9 <- c("#ff707c", # Naíve
+              "#975F24", # DZ
+              "#f8d058", # LZ
+              "#41d5a8", # Mem IgM
+              "#006c0b", # Mem IgG
+              "#902395") # Plasma
+```
+
+# Load CITE-Seq Data
+```{r}
+# B cells from reactive lymph node samples only (n=8). See rLN.Rmd for maturation state annotation.
+rLN <- readRDS("data/Objects/rLN.rds")
+```
+
+See rLN.Rmd for mapping of reactive lymph node B cell maturation states.
+
+# Maturation State UMAP
+
+```{r, fig.width=7, fig.height=7}
+DimPlot(rLN,  
+        group.by = "State",
+        cols = mathue9,
+       reduction = "umapRNA",
+       shuffle = TRUE) +
+  coord_fixed() +
+  ggtitle("") +
+  labs(x = "UMAP 1", y = "UMAP 2") +
+  theme(axis.text=element_blank(),
+        axis.ticks=element_blank()) +
+  NoLegend()
+ggsave("figures/Figure1/MaturationUMAP_coarse.pdf")
+```
+
+# Maturation Marker Heatmap
+```{r}
+# Maturation markers from Supplementary Table 3.
+features <- c("IGHD", "IGHM", "TCL1A", "SELL", "CD1C", "CXCR5", 
+                         "MME", "BCL6", "CCNB1", "AICDA", 
+                         "CAMK1", "CD72", "MS4A1", "PTPN6", 
+                         "SLA", "FCRL2", "CFLAR", "FOXP1",
+                         "CD83", "EBI3", "BTK", "BLK", "CD74", "BLNK", 
+                         "CD40", "NFKB1", "NFKB2", "TRAF1", "ICAM1", "REL", "RELB", "BACH2", 
+                         "CCR6", "GPR183", 
+                         "TNFRSF17","IRF4", "PRDM1", 
+                         "CD38","FAS", "IGHG1", "IGHA1", "IGHE", "CXCR3", 
+                         "IGLC2","IGKC")
+# Trimmed down to key state-distinguishing features
+features3 <- c("IGHD", "SELL",
+                "MME", "BCL6", "CCNB1", "AICDA", 
+                "CD40", "NFKB2", "CD83", "EBI3", 
+                "CCR6", "GPR183",
+                "IGHM", "IGHG1", "IGHA1",
+               "TNFRSF17","IRF4", "PRDM1")
+```
+
+```{r, fig.width = 2.5, fig.height = 4.5}
+Idents(rLN) <- "State"
+combined_averages <- AverageExpression(rLN, return.seurat = TRUE) 
+DoHeatmap(combined_averages, features = features3, label = FALSE, 
+          draw.lines = FALSE, group.colors = mathue9, raster = FALSE)   +
+    scale_fill_gradient2(low = "darkblue", mid = "white", high = "darkred", midpoint = 0) +
+  guides(color="none") +
+  theme(legend.key.size = unit(0.4, 'cm'), #change legend key size
+        legend.text = element_text(size=7),
+        legend.title = element_text(size=8)) #change legend title font size 
+ggsave(paste0("figures/Figure1/Heatmap_coarse3.pdf"), width = 2.5, height = 4.5)
+```
+
+# Confusion Matrix
+
+Generate a confusion matrix of Annotated vs FACS-predicted B cell maturation states.
+
+```{r}
+library(cowplot)
+conf <- function(model){
+  # generate confusion matrix of outer fold predictions vs real classes
+  cm <- confusionMatrix(model$State, model$predicted.Maturation.bulk)
+  print(cm$overall)
+  # plot confusion matrix
+  heat_plot = function(x) {
+    class(x) = "matrix"
+    x = x / rowSums(x) # convert to probability estimates
+    pheatmap(x, scale = "none",
+             cluster_rows = FALSE, cluster_cols = FALSE,
+             color = colorRampPalette(RColorBrewer::brewer.pal(9, "PuBu"))(100),
+             breaks = seq(0, 1, by = 0.01)
+             )
+  }
+  plt <- heat_plot(cm$table)
+  ggsave(file = "figures/Figure1/CM.pdf", plot = plt, width = 4.5, height = 4)
+  plt
+}
+conf(rLN@meta.data)
+```
+

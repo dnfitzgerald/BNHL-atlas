@@ -1,0 +1,287 @@
+---
+title: "Figure 4: Maturation signature TFs maintain differential activity in malignancy"
+output: html_document
+date: '2022-11-09'
+---
+
+The purpose of this figure is to compare the activity of key maturation transcription factors between states in malignancies. It follows the scripts in Figure .
+
+```{r}
+library(stringr)
+library(dplyr)
+library(purrr)
+library(ggplot2)
+library(pals)
+library(UpSetR)
+library(Seurat)
+library(ComplexHeatmap)
+library(patchwork)
+library(MAST)
+```
+
+```{r}
+# Set color palette for maturation states
+mathue9 <- c("#ff707c",
+              "#975F24",
+              "#f8d058",
+              "#41d5a8",
+              "#006c0b",
+              "#902395")
+```
+
+```{r}
+out_dir <- "output/Bcells/Epigenetics/"
+setwd(out_dir)
+```
+
+# Load Data
+
+## CITE-Seq Object
+```{r, Load seurat object}
+# Load the CITE-Seq data from all samples, including inferred TF activity (scenic) - added in Supp7.Rmd. Remove non-malignant cells in tumor samples.
+Combined <- readRDS("data/Objects/Combined_B_full.rds") %>% DietSeurat(assays = c("RNA", "ADT", "scenic")) %>% subset(Malignancy == "Malignant" | Entity == "rLN")
+gc()
+Idents(Combined) <- "State"
+```
+## Load SCENIC output
+```{r, Load SCENIC GRN output}
+# SCENIC output-target genes are assigned to each TF
+#Note: This is what we use for network re-construction
+reg_files <- list.files("/g/scb2/zaugg/amathiou/2022Jan_Donnacha_SCENIC/20211202_SCENIC_Donnacha/output/regulon", 
+                       pattern = ".*\\(\\+\\)\\.tsv$", 
+                       full.names = T)
+
+df_list <- list()
+for (file in reg_files) {
+  # the regex matches any characters except "/" that are right before a "(+).tsv" and thereby fetches the TF-names
+  TF_name <- str_extract(file, "[^\\/]+(?=\\(\\+\\)\\.tsv)")
+  regulon_df <- read.csv(file, sep = "\t", header = F, col.names = c("target", "count"))
+  regulon_df <- mutate(regulon_df, TF = TF_name) 
+  df_list[[TF_name]] <- regulon_df
+}
+# targene_df_raw contains all target genes for the TFs, even the ones with
+# counts < 80 that were not used for the activity calculation
+empty_df <- data.frame(TF = character(), target = character(),  count = numeric())
+
+targene_df_raw <- purrr:::reduce(df_list, bind_rows, .init = empty_df)
+
+# make another copy with only the target genes that were used for the activity calculation (observed in >80% of runs; set in min-regulon-gene-occurrence in config.yaml
+targene_df <- filter(targene_df_raw, count > 190)
+```
+
+```{r, Add SCENIC TF activity in seurat object}
+scenic_df_wide <- read.csv("/g/scb2/zaugg/amathiou/2022Jan_Donnacha_SCENIC/20211202_SCENIC_Donnacha/output/new_aucell_mtx.tsv", 
+                           sep = "\t", 
+                           row.names = "Cell")
+
+colnames(scenic_df_wide) <- colnames(scenic_df_wide) %>% str_replace(pattern = fixed("..."), "")
+colnames(scenic_df_wide) <- colnames(scenic_df_wide) %>% str_replace(pattern = fixed("."), "-")
+all_TFs <- colnames(scenic_df_wide)
+# remove unnecessary large objects
+rm(targene_df_raw, scenic_df_wide)
+gc()
+```
+
+## Remove non-malignant cells in tumor samples
+```{r}
+gc()
+rLN <- subset(Combined, subset = `Entity` == "rLN")
+```
+# State Specificity of TF activity in each Entity (Main Figure 4)
+
+## Identify TFs significantly enriched in non-malignant B cells (reactive lymph node)
+```{r, Find markers for maturation stage, eval = FALSE}
+Idents(rLN) <- "State"
+DE_all <- FindAllMarkers(rLN, 
+                         only.pos = T, 
+                         assay = "RNA",
+                         test.use = "MAST")
+gc()
+saveRDS(DE_all, "output/Bcells/Epigenetics/DE_all_rLN.rds")
+```
+
+```{r}
+DE_all <- readRDS("output/Bcells/Epigenetics/DE_all_rLN.rds")
+#For the rLN, find diff. active TFs between maturation stages
+sig_TFs <- list()
+DE_genes <- list()
+for (i in unique(DE_all$cluster)){
+  tmp_de <- DE_all[which(DE_all$cluster == i & DE_all$p_val_adj < 10e-16), ]  
+  DE_genes[[i]] <- tmp_de[which(tmp_de$avg_log2FC > 0.4), "gene"]
+}
+```
+
+## Plot Enriched TFs by State
+```{r, fig.width = 8, fig.height = 5}
+# Iterate over each state in the list of differentially expressed (DE) genes
+for (p in names(DE_genes)){
+  # Get the list of DE genes for the current phenotype
+  tmp_genes <- DE_genes[[p]]
+  # Filter target genes from 'targene_df' that are in 'tmp_genes', then count occurrences of each transcription factor (TF)
+  count_tfs_genes <- as.data.frame(table(targene_df[which(targene_df$target %in% tmp_genes), "TF"]))
+  # Proceed if there are any TFs for the state
+  if (nrow(count_tfs_genes) > 0){
+    # Calculate numbers for differentially active genes and targets
+    n_disease_genes <- length(unique(targene_df[which(targene_df$target %in% tmp_genes), "target"]))
+    n_targets <- length(unique(targene_df$target))
+    # Rename columns for better understanding
+    colnames(count_tfs_genes) <- c("TF", "TF_y_D_y")
+    rownames(count_tfs_genes) <- count_tfs_genes$TF
+    count_tfs_genes2 <- as.data.frame(table(targene_df[which(targene_df$TF %in% count_tfs_genes$TF), "TF"]))
+    count_tfs_genes$n_genes <- count_tfs_genes2$Freq
+    rm(count_tfs_genes2)
+    count_tfs_genes <- count_tfs_genes[rev(order(count_tfs_genes$TF_y_D_y)), ]
+    count_tfs_genes$TF_y_D_n <- count_tfs_genes$n_genes - count_tfs_genes$TF_y_D_y #TF yes disease no
+    count_tfs_genes$TF_n_D_y <- n_disease_genes -  count_tfs_genes$TF_y_D_y #TF no disease yes
+    count_tfs_genes$TF_n_D_n <- n_targets -  (count_tfs_genes$TF_n_D_y + count_tfs_genes$n_genes) #TF no disease no
+    # Create an empty data frame to store results
+    table_tfs <- data.frame()
+     # Calculate Fisher's p-value and odds ratio for each TF
+    for (j in unique(rownames(count_tfs_genes))){
+      cont_table <- data.frame()
+      cont_table['NHL', j] <- count_tfs_genes[j, 'TF_y_D_y']
+      cont_table['NHL', 'rest'] <- count_tfs_genes[j, 'TF_n_D_y']
+      cont_table['healthy', j] <- count_tfs_genes[j, 'TF_y_D_n']
+      cont_table['healthy', 'rest'] <- count_tfs_genes[j, 'TF_n_D_n']
+      table_tfs[j, 'TF'] <- j
+      table_tfs[j, 'Fisher_pvalue'] <- fisher.test(cont_table, alternative='two.sided', conf.int = TRUE)$p.value
+      table_tfs[j, 'OR'] <- fisher.test(cont_table, alternative='two.sided', conf.int = TRUE)$estimate
+    }
+    # Adjust p-values using FDR correction
+    table_tfs$fdr <- p.adjust(table_tfs$Fisher_pvalue, method="fdr")
+    table_tfs$padj <- ifelse(table_tfs$fdr < 0.1, 
+                            "<0.1", 
+                            "n.s.")
+    # Plot enrichment of TFs in bar chart for each state
+    p3 <- ggplot(table_tfs, aes(x = reorder(TF, log2(OR)), y = log2(OR), fill = padj)) + 
+      geom_bar(stat = "identity") + 
+      theme_bw() + 
+      theme(text = element_text(size = 15), 
+                     axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1), 
+            legend.position = "none") + xlab("TFs") + 
+      scale_fill_manual("padj", values = c("n.s." = "#BF812D", "<0.1" = "#35978F")) +
+      ggtitle(p)
+      
+    plot(p3)
+    sig_TFs[[p]] <- table_tfs[which(table_tfs$padj < 0.05 & log2(table_tfs$OR)>0), "TF"]
+    #message("Checkpoint")
+  }
+}
+#dev.off()
+# Compile a list of all significant TFs across states
+all_TFs <- unique(unlist(sig_TFs))
+```
+
+## Plot heatmap of enriched TFs in rLN
+```{r, fig.height=8, fig.width = 5}
+levels_htmp <- c("Naïve", "DZ", "LZ", "Mem IgM", "Mem IgG", "Plasma")
+#Version 1, plot scaled TF activity from SCENIC
+col_palette <- c(head(brewer.puor(10), 4), "white", tail(brewer.puor(10), 4))
+#First get the TF sequence from the rLN samples
+rLN_av <- as.data.frame(AverageExpression(rLN, assays = "scenic", slot = "data")$scenic)
+Heatmap(t(scale(t(rLN_av[all_TFs, levels_htmp]))), cluster_rows = F, name = "rLN", col = col_palette, cluster_columns = F)
+# Order each TF by maturation state with the highest scaled activity.
+order_tfs <- c("FOXP1", "ETS1", "KLF3",
+                "EZH2", "BRCA1", "E2F8", "E2F1", "TFDP1", "E2F2", "E2F7", "RAD21", "SMARCA4", "SPI1", "SAP30", "CUX1", "MAZ", "ENO1", "SPIB",
+               "IRF8", "RELB", "NFKB1", "NFKB2", "HIVEP3", "REL",
+               "JUND", "JUN", "JUNB", "IRF7", "STAT1", "IRF9", "STAT2", "ELF1", "IRF1", "FOS", 
+               "XBP1", "CREB3L2", "IRF4")
+# Include only TFs with high state specificity
+order_tfs2 <- c("KLF3",
+                "EZH2", "BRCA1", "E2F8", "E2F1", "TFDP1", "E2F2", "E2F7", "RAD21", "SMARCA4", "SAP30", "MAZ",
+               "IRF8", "NFKB1", "HIVEP3", "REL",
+               "IRF7", "STAT1", "IRF9", "STAT2", "ELF1", "IRF1", "FOS", 
+               "XBP1", "CREB3L2", "IRF4")
+```
+
+## Visualize their activity across entities
+```{r}
+col_palette <- c(head(brewer.prgn(50), 25), "white", "white", rev(head(brewer.puor(50), 25)))
+ht <- list()
+for (c in unique(Combined@meta.data$Entity)){
+  tmp_obj <- subset(Combined, subset = Entity == c)
+  Idents(tmp_obj) <- "State"
+  tmp_av <- as.data.frame(AverageExpression(tmp_obj, assays = "scenic")$scenic)
+  htmp_df <- t(scale(t(tmp_av[order_tfs2, levels_htmp])))
+  #message(min(htmp_df))
+  #message(max(htmp_df))
+  #max 2, min -1,5
+  htmp_df[htmp_df > 2] <- 2
+  htmp_df[htmp_df < -1.5] <- -1.5
+  ht[[c]] <- Heatmap(htmp_df, cluster_rows = F, cluster_columns = F, name = c,
+                heatmap_legend_param = list(legend_direction = "horizontal"),
+                row_title_side = "left")
+  pdf(paste0("figures/Figure4/", c, "_heatmap.pdf"), width = 3, height = 6.5)
+  draw(ht[[c]], heatmap_legend_side = "bottom")
+  dev.off()
+}
+```
+
+```{r, fig.width=8, fig.height=4}
+# Plot patchwork object
+ht$rLN + ht$MCL + ht$FL + ht$`DLBCL, GCB` + ht$`DLBCL, non-GCB` + ht$MZL
+```
+
+## Clustered heatmap
+```{r}
+library(ComplexHeatmap)
+library(circlize)
+
+# Set row order based on DE TFs by state in rLN
+levels_tfs <- c("KLF3", "EZH2", "BRCA1", "E2F8", "E2F1", "TFDP1", "E2F2", "E2F7", "RAD21", "SMARCA4", "SAP30", "MAZ", 
+                "IRF8", "NFKB1", "HIVEP3", "REL", "IRF7", "STAT1", "IRF9", "STAT2", "ELF1", "IRF1", "FOS", "XBP1", "CREB3L2", "IRF4")
+Combined@meta.data$for_htmp <- paste0(Combined@meta.data$State, "_", Combined@meta.data$Entity)
+Idents(Combined) <- "for_htmp"
+
+# Average by column
+tmp_av <- as.data.frame(AverageExpression(Combined, assays = "scenic", slot = "data")$scenic)
+tmp_av <- t(scale(t(tmp_av[levels_tfs, ])))
+
+# Create a data frame for annotations
+anno <- table(State = Combined$State, Entity = Combined$Entity,  useNA = "always") %>% as.data.frame() %>% filter(Freq != 0) %>% select(-Freq)
+
+# Set the rownames in the annotation data frame to match those in the heatmap
+rownames(anno) <- paste0(anno$State, "-", anno$Entity)
+
+# Get the order of columns from the transposed MatProp data frame
+column_order <- colnames(tmp_av)
+
+# Reorder the rows in the anno data frame to match the column order in the transposed MatProp data frame
+anno <- anno[column_order, ]
+
+# Define colors for each level of qualitative variables
+col = list(State = c("Naïve" = "#ff707c", "DZ" = "#975F24", "LZ" = "#f8d058", "Mem IgM" = "#41d5a8", "Mem IgG" = "#006c0b", "Plasma" = "#902395"),
+            Entity = c("rLN" = "#696969", "MCL" = "#008080", "FL" = "#FFA500", "DLBCL, GCB" = "#B22222", "DLBCL, non-GCB" = "#FF6347", "MZL" = "#1B3F8B"))
+
+# Create the heatmap annotation with the filtered anno data frame
+ha <- HeatmapAnnotation(df = anno, 
+                        col = col)
+
+col_palette <- colorRamp2(c(min(tmp_av), 0, max(tmp_av)), c("#007EA7", "white", "#AD2E24"))
+pdf("figures/Figure4/ClusteredHeatmap.pdf", width = 8.5, height = 7)
+hmp <- Heatmap(tmp_av, cluster_rows = F, cluster_columns = T, name = "rLN", col = col_palette, top_annotation = ha)
+dev.off()
+```
+
+
+## Ridge plots of key TFs distinguishing malignant states
+```{r}
+DefaultAssay(Combined) <- "scenic"
+# Remove rLN cells. Only tumor cells remain.
+Combined <- subset(Combined, subset = Malignancy == "Malignant")
+gc()
+```
+
+### Identified from differential activity in malignant cells (see Supp6)
+
+Naive: KLF3
+DZ: MAZ
+LZ: HDAC2
+Mem: TBL1XR1
+Plasma: ENO1
+
+```{r, fig.width = 18, fig.height = 3}
+RidgePlot(Combined, group.by = "State", features = c("KLF3", "MAZ", "HDAC2", "TBL1XR1", "XBP1"), ncol = 5, cols = mathue9) & xlab("Activity") & ylab("State")
+ggsave("figures/Figure4/RidgePlots3.pdf", width = 18, height = 3)
+```
+

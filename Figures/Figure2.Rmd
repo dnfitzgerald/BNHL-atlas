@@ -1,0 +1,136 @@
+---
+title: "Fig. 2: Divergence of B cell maturation can occur within tumors"
+author: "Donnacha Fitzgerald"
+date: "2023-03-27"
+output: html_document
+---
+
+This script generates the plots for Fig. 2. It follows the analyses in the Preprocessing and CelltypeMapping folders.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(workflowr)
+library(Seurat)
+library(ggsignif)
+```
+
+```{r}
+# Set color palette for maturation states
+mathue9 <- c("#ff707c",
+              "#975F24",
+              "#f8d058",
+              "#41d5a8",
+              "#006c0b",
+              "#902395")
+```
+
+# Load tumor cells CITE-Seq data
+```{r}
+# Load CITE-Seq data from all samples' B-cells
+Combined <- readRDS("data/Objects/Combined_B_diet.rds")
+# Remove non-malignant cells in tumor samples
+Combined <- subset(Combined, Malignancy == "Malignant" | Entity == "rLN")
+Idents(Combined) <- "PatientID"
+```
+
+# Sample UMAPs
+
+This plot is shown in Extended Data Fig. 5. 
+
+```{r}
+# Subset for malignant cells only
+Malignant <- subset(Combined, Malignancy == "Malignant")
+```
+
+```{r, fig.width = 12, fig.height = 16}
+## Malignant States
+DimPlot(Malignant, 
+        split.by = "SampleID",  
+        group.by = "State",
+       reduction = "ref.umap",
+       cols = mathue9,
+       ncol = 6,
+       raster = TRUE,
+       pt.size = 5) +
+  coord_fixed() +
+  ggtitle("Tumor Maturation States") +
+  labs(x = "UMAP 1", y = "UMAP 2")+
+  theme(axis.text=element_blank(),
+        axis.ticks=element_blank()) +
+  xlim(c(-6, 9)) +
+  ylim(c(-8, 6))
+ggsave("figures/Figure2/MalignantUMAPs_All.pdf", width = 12, height = 16)
+```
+
+```{r}
+# Revised for distinction of states
+features3 <- c("IGHD", "SELL",
+                "MME", "BCL6", "CCNB1", "AICDA", 
+                "CD40", "NFKB2", "CD83", "EBI3", 
+                "CCR6", "GPR183",
+                "IGHM", "IGHG1", "IGHA1",
+               "TNFRSF17","IRF4", "PRDM1")
+```
+
+# Tumor Maturation Stacked Bar Chart
+
+```{r, fig.width = 10, fig.height = 4.5}
+ggplot(Combined@meta.data, aes(x = SampleID, fill = State)) +
+  geom_bar(position = "fill") + 
+  ggtitle(element_text("Maturation State Composition by Sample", face = "bold")) +
+  RotatedAxis() +
+  theme_minimal() +
+  scale_fill_manual(values = mathue9, name = "State") +
+  ylab("Maturation State Proportions") +
+  xlab("Sample") +
+    theme(legend.position = "right",
+        plot.title = element_text(hjust = 0.5), 
+        axis.title.x = element_text(hjust = 0.5), 
+        axis.text.x = element_blank(),
+        axis.ticks = element_blank()) +
+  facet_grid(cols = vars(Entity), scales = "free_x", space = "free_x")
+ggsave("figures/Figure2/Entitiesmaturationbar.pdf", width = 10, height = 4.5)
+```
+# Maturation State Proportion Box Plot
+```{r, fig.width = 12, fig.height = 5}
+# Show only comparisons with significance
+sigFunc = function(x){
+  if(x < 0.001){"***"} 
+  else if(x < 0.01){"**"}
+  else if(x < 0.05){"*"}
+  else{NA}}
+# Create a color palette which contrasts well with the maturation palette
+enthue <- c("#696969", "#008080", "#FFA500",  "#B22222", "#FF6347", "#1B3F8B")
+# Calculate maturation state proportions
+MatProp <- table(Patient = Combined$PatientID, Entity = Combined$Entity, Maturation = Combined$State) %>% prop.table(margin = 1) %>% as.data.frame() %>% filter(Freq != 0)
+# Boxplot distribution of predicted maturation states within each sample grouped by entity
+Entity <- ggplot(MatProp, aes(x = Entity, y = Freq)) +
+  geom_boxplot(aes(col = Entity)) + 
+  ggbeeswarm::geom_beeswarm(aes(color = Entity), cex = 2, show.legend = FALSE) +
+  geom_signif(comparisons = list(c("rLN", "MCL"),
+                                 c("rLN", "FL"),
+                                 c("rLN", "DLBCL, GCB"),
+                                 c("rLN", "DLBCL, non-GCB"),
+                                 c("rLN", "MZL")),
+              test = "wilcox.test", textsize = 3, map_signif_level = sigFunc, 
+              step_increase = 0.05, show.legend = TRUE, vjust = 0.4) +
+  ggtitle(paste0("Maturation State Proportions by Entity")) +
+  theme_bw() +
+  ylab("Maturation State Proportion") +
+  xlab("Entity") +
+  scale_color_manual(values = enthue) +
+  theme(axis.text.x = element_text(angle = 45, size = 10, hjust = 1),
+        legend.position = "none",
+        axis.title.x = element_blank(),
+        plot.title = element_text(hjust = 0.5),
+        strip.background =element_rect(fill="black"),
+        strip.text = element_text(colour = 'white')) +
+  facet_grid(cols = vars(Maturation))
+Entity
+ggsave("figures/Figure2/BoxPlotFrequency_rLNvsAll.pdf", width = 12, height = 5)
+```
+
