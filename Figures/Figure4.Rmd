@@ -1,0 +1,194 @@
+---
+title: 'Figure 4: Longitudinal patterns of tumor maturation state composition'
+author: "Donnacha Fitzgerald"
+date: "2023-05-02"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(Seurat)
+library(qs)
+library(ggsignif)
+library(rstatix)
+library(ggpubr)
+```
+
+```{r}
+# Set maturation color palette
+mathue9 <- c("#ff707c",
+              "#975F24",
+              "#f8d058",
+              "#48edbb",
+              "#006c0b",
+              "#902395")
+              
+mathue10 <- c("#975F24",
+              "#f8d058",
+              "#006c0b")
+              
+mathue12 <- c("#975F24",
+              "#f8d058",
+              "#48edbb",
+              "#006c0b",
+              "#902395")
+```
+
+# MZL
+
+2 longitudinal samples from a MZL patient were included in our CITE-Seq cohort. LN0302 is 2 years after LN0134, following further relapse after chemo immunotherapy with obinutuzumab and bendamustine.
+
+```{r, fig.width = 4, fig.height = 5}
+# Load all processed CITE-Seq tumor cells containing the samples of interest
+Malignant <- readRDS("data/Objects/Malignant_withrLN.rds")
+levels(Malignant$predicted.Maturation_course) <- c("Naïve", "DZ", "LZ", "Mem IgM", "Mem IgG", "Plasma")
+rm(Malignant)
+LN0166 <- subset(Malignant, subset = PatientID == "LN0166")
+LN0302 <- subset(Malignant, subset = PatientID == "LN0302")
+# Merge samples
+MZL <- merge(LN0166, y = LN0302)
+MZL$State <- factor(MZL$predicted.Maturation_course, 
+                      levels = rev(c("Naïve", "DZ", "LZ", "Mem IgM", "Mem IgG", "Plasma")))
+# Calculate the proportions of each maturation state in each sample, and create a data frame for each maturation state.
+MatProp <- table(Sample = MZL$PatientID, Maturation = MZL$predicted.Maturation_course) %>% prop.table(margin = 1) %>% as.data.frame() %>% filter(Freq != 0)
+library(ggstatsplot)
+MZL_plot <- ggbarstats(data = MZL@meta.data, x = State, y = PatientID,
+           type = "nonparametric", paired = TRUE)  +
+  ggtitle("MZL", subtitle = "Bendamustine-Obinutuzumab (15 Months)") +
+  RotatedAxis() +
+  guides(fill=guide_legend(title="State")) +
+  xlab("Before vs After")+
+  ylab("Composition") +
+  scale_fill_manual(values = mathue9)+
+  theme(axis.text.x=element_blank(),
+        axis.ticks.x=element_blank())
+ggsave("figures/Supp6/MZL_fill.pdf", width = 4, height = 5)
+```
+
+# DLBCL
+
+```{r, fig.width = 4, fig.height = 5}
+LN0134 <- readRDS("data/4b_Clustering/18LN0134.RDS")
+LN0204 <- readRDS("data/4b_Clustering/19LN0204.RDS")
+LN0281 <- readRDS("data/4b_Clustering/20LN0281.RDS")
+LN0293 <- readRDS("data/4b_Clustering/21LN0293.RDS")
+
+# Isolate B cells
+LN0134 <- subset(LN0134, subset = lymph_p1s1 == "B")
+LN0204 <- subset(LN0204, subset = lymph_p1s2 == "B")
+LN0281 <- subset(LN0281, subset = lymph_p2s1 == "B")
+LN0293 <- subset(LN0293, subset = lymph_p2s2 == "B")
+DLBCL <- list(LN0134, LN0204, LN0281, LN0293)
+rm(LN0134, LN0204, LN0281, LN0293)
+# Log-normalize data (for consistency with the reference)
+lognorm <- function(x){
+  DefaultAssay(x) <- "RNA"
+  x <- NormalizeData(x) %>% ScaleData()
+  return(x)
+}
+DLBCL <- lapply(DLBCL, lognorm)
+```
+
+```{r}
+# Load reference for reference mapping
+rLN <- readRDS("data/Objects/rLN.rds")
+# Reference mapping function
+refmap <- function(x){
+  anchors <- FindTransferAnchors(reference = rLN, query = x,
+    dims = 1:50, reference.reduction = "pcaRNA")
+  x <- MapQuery(anchorset = anchors, reference = rLN, query = x,
+    refdata = list(State = "State", Maturation_fine = "Maturation_fine"), reference.reduction = "pcaRNA", reduction.model = "umapRNA")
+  return(x)
+}
+DLBCL <- lapply(DLBCL, refmap)
+order <- function(x){  # Set order of identity classes to match maturation process
+  x$predicted.Maturation_fine <- factor(x$predicted.Maturation_fine, 
+                      levels = c("Naïve", "Naïve (ACTB+)", "DZ", "Early LZ", 
+                                 "Late LZ", "IgM/IgD Mem", "IgM/IgD Mem (CD25+)", 
+                                 "IgM/IgD Mem (EGR1+)", "Mixed Mem (IFI)", 
+                                 "IgG Mem", "IgA Mem",
+                                 "Mixed Mem (HSP+)", "Mixed Mem (CD11c+)",
+                                 "Plasma"))
+  x$State<- factor(x$predicted.State, 
+                      levels = c("Naïve", "DZ", "LZ", "Mem IgM", "Mem IgG", "Plasma"))
+  return(x)
+}
+DLBCL <- lapply(DLBCL, order)
+
+```
+
+```{r}
+# Claculate light chain dominance
+KLR <- function(x){
+  klr <- x@assays$ADT@counts["Kappa-TotalA",]/(x@assays$ADT@counts["Kappa-TotalA",] + x@assays$ADT@counts["Lambda-TotalA",]) %>% t()
+  x@meta.data$KLR <- klr[1,]
+  return(x)
+}
+DLBCL <- lapply(DLBCL, KLR)
+# Plot Kappa proportion to identify tumor cells (monoclonal)
+KLRplot <- function(x){
+  FeaturePlot(x, features = "KLR") + 
+  coord_fixed() +
+    xlab("UMAP 1") +
+    scale_color_gradientn(colours = c('blue', 'grey', 'red'),  limits = c(0, 1)) +
+    ylab("UMAP 2") +
+    labs(color = "Kappa %") +
+    theme(legend.text = element_text(size=8))
+}
+lapply(DLBCL, KLRplot)
+# Naive B cells are non-malignant.
+
+# Merge samples by patient and remove non-malignant states
+DLBCL1 <- merge(DLBCL[[1]], y = DLBCL[[2]]) %>% subset(subset = State != "Naïve")
+DLBCL2 <- merge(DLBCL[[3]], y = DLBCL[[4]])
+```
+
+```{r, fig.width = 4, fig.height = 5}
+DLBCL1$State <- factor(DLBCL1$State, 
+                      levels = rev(c("Naïve", "DZ", "LZ", "Mem IgM", "Mem IgG", "Plasma")))
+library(ggstatsplot)
+DLBCL1_plot <- ggbarstats(data = DLBCL1@meta.data, x = State, y = sample,
+           type = "nonparametric", paired = TRUE)  +
+  ggtitle("DLBCL, GCB", subtitle = "CAR-T (11 Months)") +
+  RotatedAxis() +
+  guides(fill=guide_legend(title="State")) +
+  xlab("Before vs After")+
+  ylab("Composition") +
+  scale_fill_manual(values = mathue12)+
+  theme(axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+ggsave("figures/Supp6/DLBCL1_fill.pdf", width = 4, height = 5)
+```
+
+```{r, fig.width = 4, fig.height = 5}
+DLBCL2$State <- factor(DLBCL2$State, 
+                      levels = rev(c("Naïve", "DZ", "LZ", "Mem IgM", "Mem IgG", "Plasma")))
+library(ggstatsplot)
+DLBCL2_plot <- ggbarstats(data = DLBCL2@meta.data, x = State, y = sample,
+           type = "nonparametric", paired = TRUE)  +
+  ggtitle("DLBCL, GCB", subtitle = "CAR-T (2 Months)") +
+  RotatedAxis() +
+  guides(fill=guide_legend(title="State")) +
+  xlab("Before vs After")+
+  ylab("Composition") +
+  scale_fill_manual(values = mathue10)+
+  theme(axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+ggsave("figures/Supp6/DLBCL2_fill.pdf", width = 4, height = 5)
+```
+
+# Combined Plots
+
+```{r, fig.width = 11, fig.height = 5}
+library(patchwork)
+patch <- (MZL_plot + DLBCL1_plot + DLBCL2_plot) +
+  plot_layout(guides = "collect")
+patch
+ggsave("figures/Supp6/patch.pdf", plot = patch, width = 11, height = 5)
+```

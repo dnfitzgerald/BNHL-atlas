@@ -1,0 +1,245 @@
+---
+title: 'Figure 6: Intratumor maturation states occupy distinct spatial microenvironments'
+author: "Donnacha Fitzgerald"
+date: "2023-04-14"
+output: html_document
+---
+
+This script generates plots in Figure 6. It follows the analyses in CODEX/. See CODEX/CellularNeighborhoods.ipynb for the neighborhood analysis and for spatial plots.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(Seurat)
+library(workflowr)
+library(tidyverse)
+library(patchwork)
+```
+
+```{r}
+# Set color palette for maturation states
+mathue9 <- c("#ff707c",
+              "#975F24",
+              "#f8d058",
+              "#41d5a8",
+              "#006c0b",
+              "#902395")
+```
+
+
+# Load Data
+
+```{r}
+# Load Seurat object containing CODEX data
+CODEX <- readRDS(file = "data/Objects/CODEX_filtered.rds")
+```
+
+```{r}
+# Set reduction based on x and y coordinates for spatial plots
+dimreds <- function(object){
+  df <- data.frame(coord_1 = object$x, coord_2 = object$y, row.names = object$unique_cell_id) %>% as.matrix()
+  dimred <- CreateDimReducObject(embeddings=df, global = TRUE)
+  object@reductions[["coord"]] <- dimred
+  return(object)
+}
+
+downsampled <- dimreds(downsampled)
+CODEX <- dimreds(CODEX)
+```
+
+```{r}
+# Set cell type factor order
+CODEX$CellTypes_final <- factor(CODEX$CellTypes_final, levels = c(
+  "B Naïve", "B DZ", "B LZ", "B Mem-IgM", "B Mem-IgG", "B Plasma",
+  "CD4T_naive", "TH_memory", "TFH", "TREG", "TPR", 
+  "CD8T_naive", "TTOX_memory", "TTOX_exh",
+  "NK", "NKT",
+  "DC", "FDC",
+  "MC", "Macro", "Granulo",
+  "Stromal"
+  ))
+```
+
+```{r}
+# Update memory B cell labels consistent with other figures
+relabel <- function(obj){
+  Idents(obj) <- "predicted.Maturation_course2"
+  obj <- RenameIdents(object = obj, 
+                    `MD27` = "Mem-IgM",
+                    `IgG` = "Mem-IgG")
+  obj$B_States <- Idents(obj)
+  return(obj)
+}
+CODEX <- relabel(CODEX)
+CODEX$B_States <- factor(CODEX$B_States, levels = c("NA", "Naïve", "DZ", "LZ", "Mem-IgM", "Mem-IgG", "Plasma"))
+```
+
+```{r, eval = FALSE}
+# Merge unassigned neighborhood
+CODEX$N20C11 <- CODEX$N20C11 %>% as.factor()
+table(CODEX$N20C11)
+Idents(CODEX) <- 'N20C11'
+CODEX <- RenameIdents(object = CODEX, `-1` = "0")
+CODEX$N20C11 <- Idents(CODEX)
+table(CODEX$N20C11)
+```
+
+```{r, eval = FALSE}
+# Add neighborhood labels
+new.cluster.ids <- c("Mem B zone", 
+                     "Naïve B enriched",
+                     "Plasma/Macro enriched",
+                     "Treg/TFH enriched",
+                     "Stromal zone",
+                     "Follicular",
+                     "Mantle zone",
+                     "Th Mem zone",
+                     "LZ enriched",
+                     "Mixed T zone",
+                     "DZ enriched")
+names(new.cluster.ids) <- levels(CODEX)
+CODEX <- RenameIdents(CODEX, new.cluster.ids)
+# Order neighborhood labels by B cell subset
+Idents(CODEX) <- factor(Idents(CODEX), levels = c(
+  "Naïve B enriched",
+  "DZ enriched",
+  "LZ enriched",
+  "Mem B zone",
+  "Follicular",
+  "Mantle zone",
+  "Plasma/Macro enriched",
+  "Mixed T zone",
+  "Th Mem zone",
+  "Treg/TFH enriched",
+  "Stromal zone"
+))
+CODEX$N20C11_labelled <- Idents(CODEX)
+```
+
+```{r}
+# Save meta data for plotting Figure S6-7.
+write_csv(CODEX@meta.data, file = "data/Objects/CODEX_meta.csv", col_names = TRUE)
+```
+
+Spatial plots in Figure 6, S6 & S7 were subsequently plotted as in CODEX/CellularNeighborhoods.ipynb.
+
+# CITE-Seq UMAPs
+```{r}
+Combined <- readRDS("data/Objects/Combined_B_diet.rds")
+Combined <- subset(Combined, Entity == "rLN" | Malignancy == "Malignant")
+```
+
+```{r}
+Samples <- subset(Combined, PatientID == c("LN0259", "LN0135", "LN0014", "LN0188"))
+```
+
+```{r, fig.width = 12, fig.height = 3}
+# UMAPs
+DimPlot(Samples, group.by = "State", split.by = "Entity", cols = mathue9) +
+  coord_fixed() +
+  ggtitle("Spatial Distribution of B-cell Maturation States") +
+  labs(x = "UMAP 1", y = "UMAP 2")+
+  theme(axis.text=element_blank(),
+        axis.ticks=element_blank()) +
+  xlim(c(-6, 9)) +
+  ylim(c(-8, 6)) +
+  NoLegend() + 
+  theme(panel.spacing = unit(3, "cm"))
+ggsave("figures/Figure5/UMAPs.pdf")
+```
+
+```{r, fig.width = 3, fig.height = 3}
+# Accompanying bar charts
+ggplot(Samples@meta.data, aes(x = Entity, fill = State)) +
+  geom_bar(position = "fill") + 
+  ggtitle("") +
+  RotatedAxis() +
+  theme_nothing() +
+  theme(axis.text = element_blank(),
+        axis.title = element_blank()) +
+  scale_fill_manual(values = mathue9, name = "State") +
+  NoLegend()
+ggsave("figures/Figure5/MaturationBar.pdf", width = 3, height = 3)
+```
+
+# Scipy Interaction Analysis
+
+Spatial graph representations of immediately neighboring cells were constructed based on Delaunay triangulation between centroid coordinates using the scipy.spatial Python package. To compute pairwise association strengths between clusters, relative frequencies were computed using the following metric:
+
+Nij x Nt/
+Ni x Nj
+
+in which Nij is equal to the total number of edges between clusters i and j, Nt the total number of edges in the sample, and Ni and Nj the total degrees of clusters i and j respectively.
+
+```{r}
+# Import ratio of expected over observed interactions for each cell type pair in each entity (calculated in CODEX/bnhl_graph_analysis.ipynb)
+dlbcl_df <- read_csv("/g/huber/projects/CITEseq/CODEX/interaction_analysis/dataframes/dlbcl_df.csv")
+fl_df <- read_csv("/g/huber/projects/CITEseq/CODEX/interaction_analysis/dataframes/fl_df.csv")
+mcl_df <- read_csv("/g/huber/projects/CITEseq/CODEX/interaction_analysis/dataframes/mcl_df.csv")
+mzl_df <- read_csv("/g/huber/projects/CITEseq/CODEX/interaction_analysis/dataframes/mzl_df.csv")
+rln_df <- read_csv("/g/huber/projects/CITEseq/CODEX/interaction_analysis/dataframes/rln_df.csv")
+```
+
+```{r}
+ent_list <- list(dlbcl_df, fl_df, mcl_df, mzl_df, rln_df) %>% lapply(column_to_rownames, "...1")
+names(ent_list) <- c("DLBCL", "FL", "MCL", "MZL", "rLN")
+ent_list <- ent_list[c("rLN", "MCL", "FL", "DLBCL", "MZL")] # set entity order
+ent_list <- lapply(ent_list, function(x) x[-(1:4), 1:4]) # Show only B-cell interactions with other cell types
+```
+
+```{r}
+# Prepare data for heatmap plotting
+prep <- function(df){
+  df$row_names <- rownames(df)
+  df <- df %>%
+  rename_with(~ gsub("B naiive", "B Naïve", .),
+              .cols = matches("B naiive")) %>%
+  rename_with(~ gsub("B mem", "B Mem", .),
+              .cols = matches("B mem")) %>%
+  rename_with(~ gsub("plasma", "Plasma", .),
+              .cols = matches("plasma"))
+  
+  # Rename rows
+  df <- df %>%
+    mutate(
+      row_names = case_when(
+        row_names == 'B naiive' ~ 'B Naïve',
+        row_names == 'B mem' ~ 'B Mem',
+        row_names == 'plasma' ~ 'Plasma',
+        TRUE ~ row_names
+      )
+    )
+  # Transform the data to long format with 'pivot_longer'
+  long_df <- pivot_longer(df, cols = -row_names, names_to = "column_names", values_to = "values")
+  
+  # Change the order of the factor levels for rows and columns
+  long_df$row_names <- fct_relevel(long_df$row_names, "Stromal", "NKT", "NK", "Macro", "MC", "Granulo", "TTOX", "TREG", "TPR", "TH", "TFH", "FDC", "DC", "Plasma", "B Mem", "B GC", "B Naïve")  # Adjust the order as needed
+  long_df$column_names <- fct_relevel(long_df$column_names, "B Naïve", "B GC", "B Mem", "Plasma")  # Adjust the order as needed
+  
+  return(long_df)
+}
+ent_list_prep <- lapply(ent_list, prep)
+```
+
+```{r, fig.width = 10, fig.height = 3}
+library(RColorBrewer)
+# Create the heatmap
+hmap <- function(x){
+  plot <- ggplot(x, aes(x = column_names, y = row_names, fill = values)) +
+    geom_tile() +
+    scale_fill_gradientn(colors = rev(brewer.pal(11, "RdYlBu")), na.value = NA, limits = c(0,1.5)) +
+    labs(fill = "IR") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1),
+          axis.title = element_blank())
+  return(plot)
+}
+hmap_list <- lapply(ent_list_prep, hmap)
+library(patchwork)
+patch <- hmap_list$rLN + hmap_list$MCL + hmap_list$FL + hmap_list$DLBCL + hmap_list$MZL + 
+  plot_layout(ncol = 5, guides = "collect")
+patch
+ggsave(plot = patch, path = "figures/Figure5/", filename = "InteractionHeatmaps.pdf", width = 10, height = 3)
+```
