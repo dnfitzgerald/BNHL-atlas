@@ -1,0 +1,192 @@
+---
+title: "Maturation State Scores from Holmes et al, JEM, 2020"
+author: "Donnacha Fitzgerald"
+date: '2022-08-16'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+This script serves to validate our assigned B cell maturation states in the CITE-Seq dataset (ReferenceMapping.Rmd) by generating scores averaging the expression of differentially expressed genes of maturation states defined on healthy tonsils in the following study:
+
+[Holmes, A.B., Corinaldesi, C., Shen, Q., Kumar, R., Compagno, N., Wang, Z., Nitzan, M., Grunstein, E., Pasqualucci, L., Dalla-Favera, R. and Basso, K., 2020. Single-cell analysis of germinal-center B cells informs on lymphoma cell of origin and outcome. Journal of Experimental Medicine, 217(10).](https://rupress.org/jem/article/217/10/e20200483/151908/Single-cell-analysis-of-germinal-center-B-cells)
+
+```{r}
+library(workflowr)
+library(tidyverse)
+library(Seurat)
+library(readxl)
+```
+
+# Load and Visualize Data
+
+Load data from all 51 samples integrated.
+
+```{r}
+Combined <- readRDS("data/Objects/Combined_B_cleaned.rds")
+colnames(Combined@meta.data)
+```
+
+```{r}
+DimPlot(Combined, group.by = c("Maturation_M", "predicted.Maturation")) + coord_fixed()
+```
+
+Load data tables from JEM paper:
+
+```{r}
+# Listing the 50 most differentially expressed genes (by log fold-change) for each maturation state defined.
+DEgenes <- read_excel("data/DLBCLclassifier/jem_20200483_tables2.xlsx", 
+                      range = "A3:Z54", col_names = TRUE, col_types = "text")[-1, ]
+# Differential expression results from MAST in GC B cells, with the average expression, the log2 fold change, and the q-value in each cluster.
+DEresults <- read_excel("data/DLBCLclassifier/jem_20200483_tables1.xlsx", 
+                      range = "A3:AO7978", col_names = TRUE)
+# Maturation assignments for each cell
+Mat <- read.table("data/DLBCLclassifier/Fig2A_clusters_GC_g0_g1.txt", fill = TRUE)
+colnames(Mat) <- c("cluster", "state", "substate")
+Mat <- unite(Mat,  "ident", "state":"substate", remove = TRUE)
+# UMAP coordinates for each cell
+UMAP <- read.table("data/DLBCLclassifier/Fig2A_umap_data_GC_g0_g1.txt", fill = TRUE, header = TRUE)
+```
+
+# Maturation State Scores
+
+Create a score for each maturation state by averaging the normalized counts of the 50 most differentially expressed (up and down) genes.
+
+## For the combined dataset
+
+```{r, eval = FALSE}
+JEMscore <- function(x){
+  for (i in colnames(DEgenes)){
+    x[[paste0(i, "score")]] <- x@assays$RNA@data[DEgenes[[i]][DEgenes[[i]] %in% rownames(x@assays$RNA@data)], ] %>% colMeans()
+  } # genes are removed if not present in count matrix
+return(x)
+}
+Combined <- JEMscore(Combined)
+saveRDS(Combined, file = "data/Objects/Combined_B_cleaned.rds")
+```
+
+```{r}
+colnames(Combined@meta.data)
+scores <- as.vector((colnames(Combined@meta.data)))[44:69]
+```
+
+```{r, fig.width = 15, fig.height = 20}
+# Visualize scores for the combined samples
+FeaturePlot(Combined, features = scores, cols = c("blue", "red"))
+```
+
+```{r, fig.width = 20, fig.height = 20}
+# Visualize scores for all assigned maturation states
+VlnPlot(Combined, features = scores, group.by = "Maturation_M")
+```
+Difficulty matching scores uniquely to their maturation state. Some are easily distinguished by their score (eg. PB), although many match multiple scores (eg. ABC, MB). May need to be revised on more granular level.
+
+```{r, fig.width = 20, fig.height = 20}
+# Visualize scores for all more granular identities (RNA clusters)
+VlnPlot(Combined, features = scores, group.by = "Idents_res1", pt.size = 0.1)
+```
+
+Distinctions are more easily made on a more granular level.
+
+```{r, fig.width = 20, fig.height = 20}
+# Visualize scores for reference mapped maturation states from rLN
+VlnPlot(Combined, features = scores, group.by = "predicted.Maturation", pt.size = 0.1)
+```
+Strong matching is observed for the predicted maturation assignment's scores.
+
+```{r}
+DimPlot(Combined, group.by = "predicted.Maturation")
+```
+
+## For each sample
+
+```{r}
+# Load objects for each sample
+Samples <- readRDS(file = "data/Objects/List_B.rds")
+```
+
+```{r, eval = FALSE}
+# Generate scores for each maturation state as above
+Samples <- lapply(Samples, JEMscore)
+```
+
+```{r}
+scores <- as.vector((colnames(Samples[[1]]@meta.data)))[47:72]
+```
+
+
+```{r, fig.width = 15, fig.height = 20}
+# Visualize scores for one DLBCL sample
+FeaturePlot(Samples$LN0002, features = scores, cols = c("blue", "red"))
+```
+
+
+```{r, fig.width = 20, fig.height = 20}
+# Visualize scores for one DLBCL sample
+VlnPlot(Samples$LN0002, features = scores)
+```
+
+The scores support our annotations (eg. DZ.a.UP score in centroblasts and PreM.UP score in IgA Mem)
+
+```{r, fig.width = 20, fig.height = 20}
+# Visualize scores for one FL sample
+VlnPlot(Samples$LN0144, features = scores)
+```
+
+The centrocytes are enriched for DZ.UP, INT.UP and LZ.UP scores, indicating they may in fact be of mixed GC state. The Naive cells may in fact contain memory B cells due to its enrichment for PreM.UP and depletion of PreM.DWN.
+
+```{r, fig.width = 10, fig.height = 15}
+# Visualize scores for one rLN sample
+VlnPlot(Samples$LN0080, features = scores)
+```
+
+Assigned maturation states match the scores particularly well in rLN, although the centrocytes prove harder to distinguuish.
+
+```{r, eval = FALSE}
+saveRDS(Samples, file = "data/Objects/List_B.rds")
+rm(Samples)
+gc()
+```
+
+## For each entity
+
+```{r}
+Entities <- readRDS(file = "data/Objects/B_EntityList.rds")
+```
+
+```{r, warnings = FALSE}
+JEMscore <- function(x){
+  for (i in colnames(DEgenes)){
+    x[[paste0(i, "score")]] <- x@assays$RNA@data[DEgenes[[i]][DEgenes[[i]] %in% rownames(x@assays$RNA@data)], ] %>% colMeans()
+  } # genes are removed if not present in count matrix
+return(x)
+}
+Entities <- lapply(Entities, JEMscore)
+```
+
+```{r}
+colnames(Entities[[1]]@meta.data)
+scores <- as.vector((colnames(Entities[[1]]@meta.data)))[49:74]
+```
+
+```{r, fig.width = 15, fig.height = 15}
+# Visualize scores for the combined samples
+lapply(Entities, VlnPlot, features = scores, group.by = "Maturation_M")
+```
+
+Strong correspondence is observed between assigned states and scores across entities.
+
+```{r, fig.width = 15, fig.height = 15}
+# Visualize scores on predicted annotations
+lapply(Entities, VlnPlot, features = scores, group.by = "predicted.Maturation.bulk")
+```
+```{r}
+lapply(Entities, DimPlot, group.by = "predicted.Maturation.bulk")
+```
+
+```{r}
+saveRDS(Entities, "data/Objects/B_EntityList.rds")
+```
+

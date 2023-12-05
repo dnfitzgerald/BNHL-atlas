@@ -1,0 +1,252 @@
+---
+title: 'Figure S3: B cell maturation marker expression and maturation gene signature scores by entity, related to Figure 2'
+author: "Donnacha Fitzgerald"
+date: "2023-05-01"
+output: html_document
+---
+
+This script generates the plots for Figure S3. It follows the analyses in the Preprocessing and CelltypeAnnotation folder.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(Seurat)
+library(patchwork)
+```
+
+```{r}
+# Set color palette for maturation states
+mathue9 <- c("#ff707c",
+              "#975F24",
+              "#f8d058",
+              "#41d5a8",
+              "#006c0b",
+              "#902395")
+```
+
+# Malignant B Cell Proportions
+
+```{r}
+Combined <- readRDS("data/Objects/Combined_B_full.rds")
+Combined <- subset(Combined, subset = Malignancy == "Malignant" | Entity == "rLN")
+```
+
+# Maturation Marker Expression
+
+```{r}
+# View maturation markers from Morgan ad Tergaonkar et al
+features <- c("IGHD", "IGHM", "TCL1A", "SELL", "CD1C", "CXCR5", 
+                         "MME", "BCL6", "CCNB1", "AICDA", 
+                         "CAMK1", "CD72", "MS4A1", "PTPN6", 
+                         "SLA", "FCRL2", "CFLAR", "FOXP1",
+                         "CD83", "EBI3", "BTK", "BLK", "CD74", "BLNK", 
+                         "CD40", "NFKB1", "NFKB2", "TRAF1", "ICAM1", "REL", "RELB", "BACH2", 
+                         "CCR6", "GPR183", 
+                         "TNFRSF17","IRF4", "PRDM1", 
+                         "CD38","FAS", "IGHG1", "IGHA1", "IGHE", "CXCR3", 
+                         "IGLC2","IGKC")
+# Revised for the distinction of states
+features3 <- c("IGHD", "SELL",
+                "MME", "BCL6", "CCNB1", "AICDA", 
+                "CD40", "NFKB2", "CD83", "EBI3", 
+                "CCR6", "GPR183",
+                "IGHM", "IGHG1", "IGHA1",
+               "TNFRSF17","IRF4", "PRDM1")
+```
+
+```{r}
+Entities <- SplitObject(Combined, split.by = "Entity")
+```
+
+## Dot Plot
+
+```{r, fig.width = 2.5, fig.height = 4}
+matplot <- function(x, group, scale){
+  DotPlot(x, assay = "RNA", group.by = group,
+            features = rev(features3), dot.scale = scale,
+          cols = c("white", "darkblue")) + 
+      RotatedAxis() + coord_flip() + ggtitle(x$Entity[1]) +
+    NoLegend() +
+    theme(axis.title = element_blank())
+  ggsave(paste0("figures/Supp5/", x$Entity[1], "DotPlot.pdf"), width = 2.5, height = 4)
+}
+lapply(Entities, matplot, scale = 4, 
+        group = "State")
+```
+
+## Gene Signature Scores
+
+Gene signatures for each maturation state were determined from differentially expressed genes in a public tonsil daatset from Holmes et al, JEM, 2020. See CelltypeAnnotation/JEMmaturationscores.Rmd.
+
+```{r}
+# Add UPscores as new assay
+AddScores <- function(x){
+  scores <- colnames(x@meta.data) %>% str_which("UPscore")
+  score_matrix <- as.matrix(t(x@meta.data[, scores]))
+  rownames(score_matrix) <- gsub(".UPscore", "", rownames(score_matrix))
+  x[["scores"]] <-  CreateAssayObject(counts = score_matrix)
+  rownames(x[["scores"]]) <- gsub(".UPscore", "", rownames(x[["scores"]]))
+  x[["scores"]]@data <- x[["scores"]]@counts
+  x <- x %>% ScaleData(assay = "scores")
+}
+Entities <- lapply(Entities, AddScores)
+scores <- rownames(Entities[["DLBCL, non-GCB"]]@assays[["scores"]]@scale.data)
+```
+
+```{r, fig.width = 2.5, fig.height = 4}
+# Plot scaled scores for each maturation state
+ScoresHeatmap <- function(x){
+  Idents(x) <- "State"
+  DefaultAssay(x) <- "scores"
+  AverageExpression(x, return.seurat = TRUE) %>% 
+    DoHeatmap(label = TRUE, draw.lines = FALSE, assay = "scores",
+              group.colors = mathue9, group.bar = TRUE, size = 4, raster = FALSE,
+              features = Features(x)) +
+    scale_fill_gradientn(colors = rev(RColorBrewer::brewer.pal(n =10, name = "RdYlBu")))+
+    ggtitle(x$Entity[1]) +
+    NoLegend() +
+    theme(plot.title = element_text(size=14, vjust = 1, face = "bold"),
+          axis.text.y = element_text(size=11))
+  ggsave(paste0("figures/Supp5/", x$Entity[1], "ScoresHeatmap.pdf"), width = 2.5, height = 4)
+}
+lapply(Entities, ScoresHeatmap)
+```
+
+# Entity Prediction with Maturation State Composition
+
+```{r}
+library(caret)
+library(nestedcv)
+library(questionr)
+library(readxl)
+library(reader)
+library(pheatmap)
+```
+
+```{r, eval = FALSE}
+# Calculate the proportions of each maturation state in each sample, and create a data frame for each maturation state.
+MatProp <- table(Patient = Combined$PatientID, Entity = Combined$Entity, Maturation = Combined$predicted.Maturation_course) %>% 
+  prop.table(margin = 1) %>% 
+  as.data.frame() %>% 
+  filter(Freq != 0) %>% 
+  pivot_wider(names_from = Maturation, values_from = Freq) %>% 
+  column_to_rownames(var = "Patient")
+# the output is entity class for each sample
+Entity <- as.factor(MatProp$Entity)
+# the input is maturation state proportion by sample
+MatProp <- MatProp[,2:7]
+MatProp[is.na(MatProp)] <- 0 # remove NAs
+# Define control
+trControl <- trainControl(
+    number = 10,
+    search = "grid")
+library(nestedcv)
+CITEglmnet <- nestcv.train(Entity,
+                                MatProp,
+                        trControl = trControl,
+                        method = "glmnet",
+                        tuneList = NULL,
+                        continue_on_fail = TRUE,
+                        importance = TRUE,
+                        allowParallel = FALSE,
+                        metric = "Balanced accuracy",
+                        nthread = 1)
+saveRDS(CITEglmnet, file = "output/Bcells/FeaturePrediction/BEnt_CITEglmnet.rds")
+CITEglmnet$summary
+
+```
+
+```{r, fig.width = 10, fig.height = 4}
+CITEglmnet <- readRDS(file = "output/Bcells/FeaturePrediction/BEnt_CITEglmnet.rds")
+### Confusion Matrix
+cm <- function(model){
+  # generate confusion matrix of outer fold predictions vs real classes
+  modelcm <- confusionMatrix(model[["output"]][["predy"]], model[["output"]][["testy"]])
+  print(modelcm$overall)
+  # plot confusion matrix
+  heat_plot = function(x) {
+    class(x) = "matrix"
+    x = x / rowSums(x) # convert to probability estimates
+    pheatmap(x, scale = "none",
+             cluster_rows = FALSE, cluster_cols = FALSE,
+             color = colorRampPalette(RColorBrewer::brewer.pal(9, "PuBu"))(100),
+             breaks = seq(0, 1, by = 0.01),
+             main = "P( predicted | true )",
+             display_numbers = round(x, digits = 2),
+             number_color = "orange",
+             angle_col = "45")
+  }
+  confmat <- heat_plot(modelcm$table)
+  # plot accuracy statistics
+  heat_plot_class = function(x) {
+    class(x) = "matrix"
+    pheatmap(x, scale = "none",
+             cluster_rows = FALSE, cluster_cols = FALSE,
+             color = colorRampPalette(RColorBrewer::brewer.pal(9, "PuBu"))(100),
+             breaks = seq(0, 1, by = 0.01),
+             main = "Test Statistics",
+             display_numbers = round(x, digits = 2),
+             number_color = "orange",
+             angle_col = "45")
+  }
+  stats <- heat_plot_class(as.matrix(modelcm$byClass))
+  patch <- (confmat + stats) +
+    plot_layout(guides = "collect")
+  patch
+}
+cm(CITEglmnet)
+```
+
+```{r, fig.width = 10, fig.height = 4}
+## rf (Random forest)
+CITErf <- nestcv.train(Entity,
+                        MatProp,
+                        trControl = trControl,
+                        method = "rf",
+                        tuneList = NULL,
+                        continue_on_fail = TRUE,
+                        importance = TRUE,
+                        allowParallel = FALSE,
+                        metric = "Balanced accuracy",
+                        nthread = 1)
+saveRDS(CITErf, file = "output/Bcells/FeaturePrediction/BEnt_CITE_rf.rds")
+CITErf$summary
+cm(CITErf)
+```
+
+```{r, fig.width = 10, fig.height = 4}
+## xgbLinear
+CITExgbLinear <- nestcv.train(Entity,
+                                MatProp,
+                        trControl = trControl,
+                        method = "xgbLinear",
+                        tuneList = NULL,
+                        continue_on_fail = TRUE,
+                        importance = TRUE,
+                        allowParallel = FALSE,
+                        metric = "Balanced accuracy",
+                        nthread = 1)
+saveRDS(CITExgbLinear, file = "output/Bcells/FeaturePrediction/BEnt_CITE_xgbLinear.rds")
+CITExgbLinear$summary
+cm(CITExgbLinear)
+```
+
+```{r, fig.width = 10, fig.height = 4}
+## xgbTree
+CITExgbTree <- nestcv.train(Entity,
+                                MatProp,
+                        trControl = trControl,
+                        method = "xgbTree",
+                        tuneList = NULL,
+                        continue_on_fail = TRUE,
+                        importance = TRUE,
+                        allowParallel = FALSE,
+                        metric = "Balanced accuracy",
+                        nthread = 1)
+saveRDS(CITExgbTree, file = "output/Bcells/FeaturePrediction/BEnt_CITE_xgbTree.rds")
+CITExgbTree$summary
+cm(CITExgbTree)
+```

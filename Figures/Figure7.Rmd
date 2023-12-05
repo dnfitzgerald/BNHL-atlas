@@ -1,0 +1,253 @@
+---
+title: 'Figure 7: Genetic variants among intratumor maturation states'
+author: "Donnacha Fitzgerald"
+date: "2023-05-04"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+copykat is used to infer copy number variants from single-cell RNA sequencing data. We applied this to scRNA-seq data from our CITE-Seq cohort in CNV/copykat.Rmd.
+
+```{r, eval=TRUE}
+library(Seurat)
+library(SeuratObject)
+library(tidyverse)
+library(workflowr)
+library(copykat)
+library(future.apply)
+library(ggpubr)
+library(patchwork)
+library(reshape2)
+library(pheatmap)
+```
+
+```{r}
+# Set color palette for maturation states
+mathue9 <- c("#ff707c",
+              "#975F24",
+              "#f8d058",
+              "#41d5a8",
+              "#006c0b",
+              "#902395")
+```
+
+# Load Data
+
+## CITE-Seq Data 
+```{r}
+# Load annotated CITE-Seq data from all tumor cells
+Combined <- readRDS("data/Objects/Malignant.rds")
+```
+
+# Visualize Expression of Mutated Genes
+
+See the Supplemental DNA Sequencing report for mutations identified with targeted DNA-sequencing. Here, we visualize the expression of genes with detected mutants across maturation states in select samples from each entity.
+
+```{r, fig.width = 5, fig.height = 5, eval = FALSE}
+MutPlot <- function(x, features, title){ 
+  DotPlot(Combined, features = features, col.min = -1.25, col.max = 1.5, scale.min = 0, scale.max = 100) + 
+    RotatedAxis() + 
+    ggtitle(title) + 
+    coord_flip() +
+    labs(y = "State", x = "Mutated Genes") +
+    theme(plot.title = element_text(size = 15, face = "italic"))
+}
+
+MCL <- MutPlot("LN0176", features = c("ATM", "ARID1A", "ATP6AP2"), title = "MCL (LN0176)")
+
+FL <- MutPlot("LN0267", features = c("KMT2D", "BCL2", "TNFRSF14", "HIST1H1E", "DTX1", "HIST1H1C", "EBF1", "HIST1H2BC", "ZNF608"), title = "FL (LN0267)")
+
+DLBCL <- MutPlot("LN0178", features = c("MYD88", "BCL7A", "PIM1", "HIST1H1D"), title = "DLBCL (LN0178)")
+
+MZL <- MutPlot("LN0302", features = c("BCL10", "KMT2D", "TNFAIP3", "B2M", "CARD11"), title = "MZL (LN0302)")
+```
+
+```{r, fig.width = 13, fig.height = 3.5, eval = FALSE}
+library(patchwork)
+patch <- (MCL | FL | DLBCL | MZL) + plot_layout(guides = "collect")
+patch
+ggsave("figures/Figure6/MutPlots.pdf", plot = patch, width = 15, height = 4)
+```
+
+# CNV and Ploidy by State
+
+## FL7
+```{r}
+FL7 <- subset(Combined, SampleID == "FL7")
+```
+
+### Add CNV Data
+```{r}
+# Add CNV data calculated in CNV/copykat.Rmd to the sample's Seurat object.
+AddPloidy <- function(x){
+  gc()
+  CNA <- data.frame(read.delim(paste0("/output/Bcells/CNV/", x$PatientID[1], "_copykat_CNA_results.txt")))
+  pred <- data.frame(read.delim(paste0("/output/Bcells/CNV/", x$PatientID[1], "_copykat_prediction.txt")))
+  # Add aneuploidy to metadata
+  pred <- rename(pred, Barcode_full = cell.names)
+  x@meta.data <- left_join(x@meta.data, pred, by = "Barcode_full")
+  rownames(x@meta.data) <- colnames(x[["RNA"]]@counts) # ensure matching cell names
+  return(x)
+}
+FL7 <- AddPloidy(FL7)
+```
+```{r}
+# Remove a few cells with ploidy undefined
+FL7 <- subset(FL7, copykat.pred != "not.defined")
+```
+
+```{r, eval = FALSE}
+# Find copy number variants associated with ploidy and maturation states
+DefaultAssay(FL7) <- "CNV"
+FL7 <- FindVariableFeatures(FL7)
+Idents(FL7) <- "copykat.pred"
+PloidyCNVmarkers_FL7 <- FindAllMarkers(FL7, min.pct = 0, logfc.threshold = 0.1)
+Idents(FL7) <- "State"
+StateCNVmarkers_FL7 <- FindAllMarkers(FL7, min.pct = 0, logfc.threshold = 0.1)
+```
+
+```{r, eval = FALSE}
+# Plot scaled scores for each maturation state
+PloidyCNVmarkers %>%
+    group_by(cluster) %>%
+    slice_max(order_by = avg_log2FC,
+              n = 1,
+              with_ties = FALSE,
+              ) -> top1
+Idents(FL7) <- "State"
+DefaultAssay(FL7) <- "CNV"
+avg <- AverageExpression(FL7, return.seurat = TRUE, slot = "data") 
+DoHeatmap(avg, label = TRUE, draw.lines = FALSE, slot = "data", assay = "CNV",
+            group.colors = mathue9, group.bar = TRUE, size = 4, raster = FALSE,
+            features = top1$gene) +
+  scale_fill_gradientn(colors = rev(RColorBrewer::brewer.pal(n =10, name = "RdBu")))+
+  ggtitle(paste0(FL7$Entity[1], " ", FL7$PatientID[1]))  +
+  guides("none")
+ggsave(paste0("/figures/Figure6/", FL7$PatientID[1], "CNVHeatmap.pdf"), width = 4, height = 5)
+```
+
+Copy number variation in position 6-26329011 was identified between maturation states and in aneuploid cells.
+
+```{r, fig.width = 10, fig.height = 5, warning=FALSE}
+PloidyPlot <- function(x, position){
+  DefaultAssay(x) <- "CNV"
+  Matplot <- DimPlot(x, reduction = "ref.umap", cols = mathue9, group.by = "State")  + xlim(-5, 6) + ylim(-8, 7) + 
+    ggtitle("Maturation States") + coord_fixed() +
+    labs(x = "UMAP 1", y = "UMAP2") +
+    theme(axis.text = element_blank(),
+          axis.ticks = element_blank(),
+          legend.position = "bottom")
+  Variant <- FeaturePlot(x, features = position, slot = "data", reduction = "ref.umap") + coord_fixed() +
+    scale_colour_gradient2(low = "blue", mid = "grey", high = "red", midpoint = 0)  + xlim(-5, 6) + ylim(-8, 7)+
+    labs(x = "UMAP 1", y = "UMAP2") +
+    theme(axis.text = element_blank(),
+          axis.ticks = element_blank(),
+          legend.position = "bottom") +
+    ggtitle("6p22.2 CNV")
+  Ploidy <- DimPlot(x, reduction = "ref.umap", group.by = "copykat.pred") + 
+    ggtitle("Ploidy") + coord_fixed()  + xlim(-5, 6) + ylim(-8, 7)  +
+    labs(x = "UMAP 1", y = "UMAP2") +
+    theme(axis.text = element_blank(),
+          axis.ticks = element_blank(),
+          legend.position = "bottom")
+  Plot <- Matplot | Ploidy | Variant 
+  ggsave(plot = Plot, file = paste0("/figures/Figure6/", x$Entity[1], "_", x$PatientID[1], ".pdf"), width = 10, height = 5)
+  Plot
+}
+PloidyPlot(FL7, position = "6-26329011")
+```
+```{r}
+VlnPlot(FL7, group.by = "State", features = "6-26329011", slot = "data")
+```
+
+```{r, fig.width = 6, fig.height = 2}
+ggplot(FL7@meta.data, aes(x = State, fill = copykat.pred)) +
+  geom_bar(position = "dodge") +
+  theme_bw() +
+  scale_x_discrete(limits = rev(levels(FL7$State))) +
+  coord_flip() +
+  guides(fill=guide_legend(title=""))
+ggsave("/figures/Figure6/FL7bar.pdf", width = 6, height = 2)
+```
+
+```{r}
+BoxPlot(FL7, group.by = "State", features = "6-26329011", slot = "data")
+```
+
+### Verification against CNA from DNA-Seqeuncing
+
+Inferred with CNVkit
+
+```{r}
+CNAbulk <- read.table("data/NGS/CNAfromCNVkit.seg.txt", header = TRUE, sep = "\t")
+```
+
+```{r}
+filtered <- CNAbulk %>% 
+  filter(sample == "20LN0267", chromosome == "chr6") %>% 
+  arrange(start)
+filtered
+```
+
+Copy number gain is observed in a large region of chromosome 6p including position 26329011.
+
+
+## All Tumors
+
+Plot the most abundant copy number variants for each state.
+```{r}
+# Slim down the Seurat Object for memory
+DefaultAssay(Combined) <- "CNV"
+Combined <- DietSeurat(
+  Combined,
+  layers = c('counts', 'data', 'scale.data'),
+  data = TRUE,
+  scale.data = TRUE,
+  assays = c('CNV'),
+  dimreducs = c('ref.umap', 'pcaRNA', 'umapRNA', 'pcaADT', 'umapADT', 'MOFA', 'umapMOFA'),
+  graphs = NULL
+)
+gc()
+```
+
+
+```{r, fig.width = 7, fig.height= 7}
+# Get CNV assay data, which is a Sparse Matrix, and convert to data frame
+CNV_df <- Combined[["CNV"]]@data %>% as.matrix() %>% t() %>% as.data.frame()
+
+# Get cell type information for each cell and 
+cell_types <- Combined@meta.data$State
+CNV_df$State <- cell_types
+
+# Calculate mean CNV for each gene per cell type, replace NA values with 0 (or any other appropriate value)
+mean_CNV_df <- CNV_df %>%
+  group_by(State) %>%
+  summarise_all(list(~mean(., na.rm = TRUE)), .groups = "drop")
+
+# Melt the entire mean CNV data for heatmap
+mean_CNV_df_long <- reshape2::melt(mean_CNV_df, id = "State")
+
+# Select the top N genes for each group
+mean_CNV_df_long %>%
+    group_by(State) %>%
+    slice_max(n = 3, order_by = value, with_ties = FALSE) %>% 
+    arrange(State) -> top3
+
+mean_CNV_df_long %>%
+    group_by(State) %>%
+    slice_min(n = 3, order_by = value, with_ties = FALSE) %>% 
+    arrange(State) -> bottom3
+
+diffCNV <- rbind(top3, bottom3)
+
+# Plot heatmap using Seurat
+DoHeatmap(Combined, label = TRUE, draw.lines = FALSE, slot = "data", assay = "CNV",
+            group.colors = mathue9, group.bar = TRUE, size = 4, raster = TRUE,
+            features = diffCNV$variable, group.by = "State") +
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red") +
+  ggtitle("")
+ggsave("figures/Figure6/Heatmap.pdf")
+```

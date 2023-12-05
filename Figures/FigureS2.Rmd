@@ -1,0 +1,174 @@
+---
+title: 'Figure S2: Isolation of malignant B cells based on light chain restriction, related to Figure 2'
+author: "Donnacha Fitzgerald"
+date: "2023-04-04"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(Seurat)
+library(workflowr)
+library(patchwork)
+```
+
+```{r}
+# Set color palette for maturation states
+mathue9 <- c("#ff707c",
+              "#975F24",
+              "#f8d058",
+              "#41d5a8",
+              "#006c0b",
+              "#902395")
+```
+
+
+# Load Data
+
+Single cell RNA-sequencing data with B cell receptor profiling data for 8 samples is loaded. See Preprocessing/BCR.Rmd for processing and characterization.
+
+```{r}
+BCR <- readRDS(file = "data/Objects/5prime.rds")
+```
+
+```{r}
+# Merge 2 samples (MCL and MZL)
+BCRmerged <- merge(BCR$LN0078, y = BCR$LN0302, merge.dr = c("ref.umap"))
+order <- function(x){  # Set order of identity classes to match maturation process
+  x$predicted.Maturation_fine <- factor(x$predicted.Maturation_fine, 
+                      levels = c("Naïve", "Naïve (ACTB+)", "DZ", "Early LZ", 
+                                 "Late LZ", "IgM/IgD Mem", "IgM/IgD Mem (CD25+)", 
+                                 "IgM/IgD Mem (EGR1+)", "Mixed Mem (IFI)", 
+                                 "IgG Mem", "IgA Mem",
+                                 "Mixed Mem (HSP+)", "Mixed Mem (CD11c+)",
+                                 "Plasma"))
+  x$predicted.Maturation_course <- factor(x$predicted.Maturation_course, 
+                      levels = c("Naïve", "DZ", "LZ", "MD27", "IgG", "Plasma"))
+  x$PatientID <- factor(x$PatientID, 
+                      levels = c("LN0132", "LN0078", "LN0144", "LN0278", "LN0178", "LN0193", "LN0217", "LN0302"))
+  Idents(x) <- x$predicted.Maturation_course
+  x <- RenameIdents(object = x, `MD27` = "Mem IgM", `IgG` = "Mem IgG")
+  x$State <- Idents(x)
+  x$State <- factor(x$State, levels = c("Naïve", "DZ", "LZ", "Mem IgM", "Mem IgG", "Plasma"))
+  return(x)
+}
+BCRmerged <- order(BCRmerged) %>% ScaleData()
+```
+# Plots
+```{r, fig.width = 2.5, fig.height = 5}
+## BCR Clones
+BCRplot <- DimPlot(BCRmerged, 
+        split.by = "PatientID",  
+        group.by = "b_clonotype_id",
+       reduction = "ref.umap",
+       ncol = 1,
+       cols = "PRGn",
+       cols.highlight = "blue") +
+  coord_fixed() +
+  ggtitle("BCR Clone") +
+  NoLegend() +
+  labs(x = "UMAP 1", y = "UMAP 2")+
+  theme(axis.text=element_blank(),
+        axis.ticks=element_blank(),
+        strip.text = element_blank()) +
+  xlim(-5, 9) +
+  ylim(-8, 7)
+BCRplot
+ggsave("figures/Figure2/BCRclonotypeUMAP2.pdf", width = 2.5, height = 5)
+```
+
+## Light chain
+
+Light chain restriction is an indicator of monoclonality and malignancy.
+```{r}
+# Calculate proportion of light chain
+KLR <- function(x){
+  klr <- x@assays$RNA@counts["IGKC",]/(x@assays$RNA@counts["IGKC",] + x@assays$RNA@counts["IGLC1",] + x@assays$RNA@counts["IGLC2",] + x@assays$RNA@counts["IGLC3",] + x@assays$RNA@counts["IGLC5",] + x@assays$RNA@counts["IGLC6",] + x@assays$RNA@counts["IGLC7",]) %>% t()
+  x@meta.data$KLR <- klr[1,] %>% as.numeric()
+  return(x)
+}
+BCRmerged <- KLR(BCRmerged)
+```
+
+```{r, fig.width = 2.5, fig.height = 5}
+KLRplot <- FeaturePlot(BCRmerged, 
+        features = "KLR",
+        cols = c("blue", "grey", "red"),
+       reduction = "ref.umap") +
+  coord_fixed() +
+  facet_grid(rows = vars(BCRmerged$PatientID)) + 
+  theme(axis.text = element_blank(),
+        legend.position = "none",
+        axis.ticks = element_blank(),
+        strip.text = element_blank()) +
+  labs(x = "UMAP 1", y = "UMAP 2") +
+  ggtitle("Immunoglobulin Light Chain") +
+  xlim(-5, 9) +
+  ylim(-8, 7)
+KLRplot
+ggsave("figures/Figure2/KLR_UMAP2.pdf", width = 2.5, height = 5)
+```
+
+```{r, fig.width=2.5, fig.height=5}
+Vplot <- VlnPlot(BCRmerged, group.by = "PatientID", features = "KLR", split.plot = TRUE, split.by = "Malignancy",
+                cols = c("#40004B", "darkgrey"), add.noise = T, alpha = 0) +
+  ggtitle("Kappa Proportion") +
+  labs(x = "", y = "Kappa Proportion") +
+  theme(axis.text.y = element_blank(),
+        axis.ticks.y = element_blank()) +
+  coord_flip() +
+    scale_x_discrete(limits=rev) +
+  NoLegend()
+Vplot
+ggsave("figures/Figure2/KLR_VlnPlot2.pdf", width = 2.5, height = 5)
+```
+
+```{r, fig.width=7, fig.height=5}
+library(cowplot)
+plot_grid(BCRplot, KLRplot, Vplot, ncol = 3, align = "h")
+ggsave("figures/Figure2/UMAP_cowplot.pdf", width = 7, height = 5)
+```
+
+# Light chain distribution across all CITE-Seq tumor samples
+```{r}
+rm(BCR)
+# Load CITE-Seq data from all malignant samples' B-cells
+Combined <- readRDS("data/Objects/Combined_B_diet.rds")
+Combined$KLR <- replace_na(Combined$KLR, 0.5)
+Malignant <- subset(Combined, Malignancy == "Malignant")
+```
+
+```{r}
+# Create a color ramp from "blue" to "red"
+color_palette <- colorRampPalette(c("red", "red", "grey", "blue"))
+
+# Define the number of colors you want in your palette
+num_colors <- length(unique(Malignant$SampleID))
+
+# Use the color_palette function to generate the desired number of colors
+colors <- color_palette(num_colors)
+```
+
+```{r, fig.width = 4, fig.height = 3}
+VlnPlot(Malignant, group.by = "SampleID", features = "KLR", sort = T,
+                raster = FALSE, fill.by = "KLR", cols = colors, alpha = 0) +
+  NoLegend() +
+  stat_summary(fun = mean, geom='point', size = 3, colour = "darkgreen", shape = 95)+
+  geom_hline(yintercept = c(0.25, 0.75), col= c("blue","red")) +
+  labs(x = "Samples", y = "Kappa Light Chain Propotion") +
+  ggtitle("Light Chain Restriction by Tumor") +
+  theme(text = element_text(size = 7),
+        plot.title = element_text(size = 7, face = "bold"),
+        axis.text = element_text(size = 5))
+ggsave("figures/Figure2/KLR_VlnPlot.pdf", width = 4, height = 3)
+```
+
+2 samples have light-chain depleted malignant populations.
+
+```{r, fig.width=15}
+VlnPlot(Malignant, group.by = "SampleID", features = c(".Kappa", ".Lambda"), raster= F, slot = "counts", log = T)
+```

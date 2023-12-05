@@ -1,0 +1,276 @@
+---
+title: "Analysis of 5' BCR Sequencing Data"
+author: "Donnacha Fitzgerald"
+date: "27/01/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.path = "papers/Bcells/figures/BCR/")
+set.seed(23)
+```
+
+# Load Packages and Data
+```{r}
+library(workflowr)
+library(Seurat)
+library(tidyverse)
+library(cowplot)
+```
+
+```{r}
+# Load count matrices
+LN0217 <- Read10X("/g/huber/projects/CITEseq/cellranger_out/20LN0217_5prime/outs/per_sample_outs/20LN0217/count/sample_feature_bc_matrix")
+LN0302 <- Read10X("/g/huber/projects/CITEseq/cellranger_out/21LN0302_5prime/outs/per_sample_outs/21LN0302/count/sample_feature_bc_matrix")
+LN0278 <- Read10X("/g/huber/projects/CITEseq/cellranger_out/20LN0278_5prime/outs/per_sample_outs/20LN0278/count/sample_feature_bc_matrix")
+LN0193 <- Read10X("/g/huber/projects/CITEseq/cellranger_out/19LN0193_5prime/outs/per_sample_outs/19LN0193/count/sample_feature_bc_matrix")
+LN0178 <- Read10X("/g/huber/projects/CITEseq/cellranger_out/19LN0178_5prime/outs/per_sample_outs/19LN0178/count/sample_feature_bc_matrix")
+LN0144 <- Read10X("/g/huber/projects/CITEseq/cellranger_out/19LN0144_5prime/outs/per_sample_outs/19LN0144/count/sample_feature_bc_matrix")
+LN0132 <- Read10X("/g/huber/projects/CITEseq/cellranger_out/18LN0132_5prime/outs/per_sample_outs/18LN0132/count/sample_feature_bc_matrix")
+LN0078 <- Read10X("/g/huber/projects/CITEseq/cellranger_out/18LN0078_5prime/outs/per_sample_outs/18LN0078/count/sample_feature_bc_matrix")
+```
+
+```{r}
+samples_counts <- list(LN0217, LN0302, LN0278, LN0193, LN0178, LN0144, LN0132, LN0078)
+samples <- lapply(samples_counts, CreateSeuratObject, min.cells = 3, min.features = 200)
+names(samples) <- list('LN0217', 'LN0302', 'LN0278', 'LN0193', 'LN0178', 'LN0144', 'LN0132', 'LN0078')
+saveRDS(samples, file = "data/5primeVDJ/list.rds")
+```
+
+# Add Clonotype Info
+```{r}
+add_clonotype <- function(bcr_prefix, seurat_obj, type="t"){
+    bcr <- read.csv(paste(bcr_prefix,"filtered_contig_annotations.csv", sep=""))
+
+    # Remove the -1 at the end of each barcode.
+    # Subsets so only the first line of each barcode is kept,
+    # as each entry for given barcode will have same clonotype.
+    bcr <- bcr[!duplicated(bcr$barcode), ]
+
+    # Only keep the barcode and clonotype columns. 
+    # We'll get additional clonotype info from the clonotype table.
+    bcr <- bcr[,c("barcode", "raw_clonotype_id")]
+    names(bcr)[names(bcr) == "raw_clonotype_id"] <- "clonotype_id"
+
+    # Clonotype-centric info.
+    clono <- read.csv(paste(bcr_prefix,"clonotypes.csv", sep=""))
+
+    # Slap the AA sequences onto our original table by clonotype_id.
+    bcr <- merge(bcr, clono[, c("clonotype_id", "cdr3s_aa")])
+    names(bcr)[names(bcr) == "cdr3s_aa"] <- "cdr3s_aa"
+
+    # Reorder so barcodes are first column and set them as rownames.
+    bcr <- bcr[, c(2,1,3)]
+    rownames(bcr) <- bcr[,1]
+    bcr[,1] <- NULL
+    colnames(bcr) <- paste(type, colnames(bcr), sep="_")
+    # Add to the Seurat object's metadata.
+    clono_seurat <- AddMetaData(object=seurat_obj, metadata=bcr)
+    return(clono_seurat)
+}
+samples$LN0217 <- add_clonotype("/g/huber/projects/CITEseq/cellranger_out/20LN0217_5prime/outs/per_sample_outs/20LN0217/vdj_b/", samples$LN0217, "b")
+samples$LN0302 <- add_clonotype("/g/huber/projects/CITEseq/cellranger_out/21LN0302_5prime/outs/per_sample_outs/21LN0302/vdj_b/", samples$LN0302, "b")
+samples$LN0278 <- add_clonotype("/g/huber/projects/CITEseq/cellranger_out/20LN0278_5prime/outs/per_sample_outs/20LN0278/vdj_b/", samples$LN0278, "b")
+samples$LN0193 <- add_clonotype("/g/huber/projects/CITEseq/cellranger_out/19LN0193_5prime/outs/per_sample_outs/19LN0193/vdj_b/", samples$LN0193, "b")
+samples$LN0178 <- add_clonotype("/g/huber/projects/CITEseq/cellranger_out/19LN0178_5prime/outs/per_sample_outs/19LN0178/vdj_b/", samples$LN0178, "b")
+samples$LN0144 <- add_clonotype("/g/huber/projects/CITEseq/cellranger_out/19LN0144_5prime/outs/per_sample_outs/19LN0144/vdj_b/", samples$LN0144, "b")
+samples$LN0132 <- add_clonotype("/g/huber/projects/CITEseq/cellranger_out/18LN0132_5prime/outs/per_sample_outs/18LN0132/vdj_b/", samples$LN0132, "b")
+samples$LN0078 <- add_clonotype("/g/huber/projects/CITEseq/cellranger_out/18LN0078_5prime/outs/per_sample_outs/18LN0078/vdj_b/", samples$LN0078, "b")
+```
+
+# QC
+```{r}
+mito <- function(x){
+  x[["percent.mt"]] <- PercentageFeatureSet(x, pattern = "^MT-")
+  return(x)
+}
+samples <- lapply(samples, mito)
+```
+
+```{r}
+# Visualize QC metrics as a violin plot
+lapply(samples, VlnPlot, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+```
+
+```{r}
+QCplot <- function(x){
+plot1 <- FeatureScatter(x, feature1 = "nCount_RNA", feature2 = "percent.mt", pt.size = 0.1)
+plot2 <- FeatureScatter(x, feature1 = "nCount_RNA", feature2 = "nFeature_RNA", pt.size = 0.1)
+plot1 + plot2
+}
+lapply(samples, QCplot)
+```
+```{r}
+filtr <- function(x){
+  x <- subset(x, subset = nFeature_RNA > 200 & nFeature_RNA < 6000 & percent.mt < 15)
+  return(x)
+}
+samples <- lapply(samples, filtr)
+```
+
+# Processing
+
+```{r}
+proc <- function(x){
+  x <- NormalizeData(x, normalization.method = "LogNormalize", scale.factor = 10000)
+  x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 2000)
+  all.genes <- rownames(x)
+  x <- ScaleData(x, features = all.genes)
+  x <- RunPCA(x, features = VariableFeatures(object = x))
+  x <- FindNeighbors(x, dims = 1:50)
+  x <- FindClusters(x, resolution = 0.1)
+  x <- RunUMAP(x, dims = 1:50)
+}
+samples <- lapply(samples, proc)
+saveRDS(samples, file = "data/5primeVDJ/list_clustered.rds")
+```
+
+# Cluster analysis
+```{r}
+samples <- lapply(samples, FindClusters, resolution = 0.1)
+lapply(samples, DimPlot)
+```
+```{r}
+lapply(samples, DotPlot, features = c("CD3E", "CD8A", "IL7R", "CD19", "MS4A1", "CD20", "IGKC", "IGLC2"))
+```
+# Isolated B cells Clustering
+
+```{r}
+# subset B cells and remove doublets
+LN0217 <- subset(samples$LN0217, idents = c("0", "3", "4"))
+LN0302 <- subset(samples$LN0302, idents = c("2", "3", "7"))
+LN0278 <- subset(samples$LN0278, idents = c("0"))
+LN0193 <- subset(samples$LN0193, idents = c("1", "3", "4", "5", "8"))
+LN0178 <- subset(samples$LN0178, idents = c("0", "4"))
+LN0144 <- subset(samples$LN0144, idents = c("0", "3", "4"))
+LN0132 <- subset(samples$LN0132, idents = c("0", "7"))
+LN0078 <- subset(samples$LN0078, idents = c("0", "3", "5"))
+Bcells <- list(LN0217, LN0302, LN0278, LN0193, LN0178, LN0144, LN0132, LN0078)
+names(Bcells) <- list('LN0217', 'LN0302', 'LN0278', 'LN0193', 'LN0178', 'LN0144', 'LN0132', 'LN0078') 
+```
+
+# Processing
+
+```{r, verbose = FALSE}
+proc <- function(x){
+  x <- NormalizeData(x, normalization.method = "LogNormalize", scale.factor = 10000)
+  x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 2000)
+  all.genes <- rownames(x)
+  x <- ScaleData(x, features = all.genes)
+  x <- RunPCA(x, features = VariableFeatures(object = x))
+  x <- FindNeighbors(x, dims = 1:50)
+  x <- FindClusters(x, resolution = 0.2)
+  x <- RunUMAP(x, dims = 1:50)
+}
+Bcells <- lapply(Bcells, proc)
+saveRDS(Bcells, file = "data/5primeVDJ/Bcells_clustered.rds")
+```
+# Visualization
+
+```{r, fig.width=15, fig.height=3}
+clonoplot <- function(x, y){
+  dimplot <- DimPlot(x, label = TRUE, label.size = 5) + NoLegend() + coord_fixed() + ggtitle(y)
+  clono <- DimPlot(x, group.by = "b_clonotype_id") + 
+    NoLegend() + 
+    coord_fixed()
+  markers <- DotPlot(x, assay = "RNA", group.by = "seurat_clusters", features = c("IGHD", "IGHM", "CD24", "CD1C", "NOTCH2", "TCL1A", "MME", "CCNB1", "BCL6", "MYC", "CXCR4", "AICDA", "CD27", "CD40", "CD83", "CXCR5", "EBI3", "BTK",  "BACH2", "CCR6", "TNFRSF17","IRF4", "PRDM1", "CD38", "FAS", "IGHG1", "IGHA1", "IGHE", "CXCR3"), dot.scale = 5) + RotatedAxis() + coord_flip() + ggtitle("RNA Maturation Marker Profile")
+  print(dimplot+clono+markers)
+  ggsave(paste0("papers/Bcells/figures/BCR/", y, ".pdf"))
+}
+sample_names <- list('LN0217', 'LN0302', 'LN0278', 'LN0193', 'LN0178', 'LN0144', 'LN0132', 'LN0078')
+mapply(clonoplot, Bcells, sample_names)
+```
+
+# Annotation
+
+```{r}
+names(Bcells) <- list('LN0217', 'LN0302', 'LN0278', 'LN0193', 'LN0178', 'LN0144', 'LN0132', 'LN0078')
+```
+
+## Malignancy
+```{r}
+annotations <- list(
+aLN0217 <- c("N", "M", "N", "M"),
+aLN0302 <- c("N", "M", "M", "M", "M"),
+aLN0278 <- c("M"),
+aLN0193 <- c("M", "N", "N", "M", "N", "M", "N"),
+aLN0178 <- c("M", "M", "M", "M", "N", "M"),
+aLN0144 <- c("M", "M", "N", "M", "N"),
+aLN0132 <- c("N", "N", "N", "N", "N"),
+aLN0078 <- c("M", "M", "N", "N")
+)
+# Annotate each sample
+Annotate <- function(object, annotations) {
+  Idents(object) <- "seurat_clusters"
+  new.cluster.ids <- annotations
+  names(new.cluster.ids) <- levels(object)
+  object <- RenameIdents(object, new.cluster.ids)
+  object$Malignancy <- Idents(object)
+  return(object)
+}
+Bcells <- mapply(Annotate, Bcells, annotations)
+```
+
+```{r}
+lapply(Bcells, DimPlot, group.by = "Malignancy")
+```
+
+## Maturation Markers
+```{r}
+annotations <- list(
+  aLN0217 <- c("Naive", "PB", "GC", "PB"),
+  aLN0302 <- c("Naive", "MZB", "MB", "CC", "PB"),
+  aLN0278 <- c("GC"),
+  aLN0193 <- c("GC", "GC", "Mix", "GC", "IgA Mem", "PB", "ABC"),
+  aLN0178 <- c("GC", "GC", "GC", "GC", "Mix", "PB"),
+  aLN0144 <- c("CC", "CC", "Mix", "CB", "ABC"),
+  aLN0132 <- c("FOB", "MZB", "Mem", "CC", "PB"),
+  aLN0078 <- c("MC", "Mix", "ABC", "MZB")
+)
+# Annotate each sample
+Annotate <- function(object, annotations) {
+  Idents(object) <- "seurat_clusters"
+  new.cluster.ids <- annotations
+  names(new.cluster.ids) <- levels(object)
+  object <- RenameIdents(object, new.cluster.ids)
+  object$Maturation_M <- Idents(object)
+  return(object)
+}
+Bcells <- mapply(Annotate, Bcells, annotations)
+```
+
+```{r}
+lapply(Bcells, DimPlot, group.by = "Maturation_M")
+```
+
+## Add Clinical Features to Metadata
+
+```{r}
+# Clinical features from the patient medical records are matched to each sample in the single-cell object
+features <- readxl::read_xlsx("data/ClinicalFeatures/output/ClinicalFeatures_translated.xlsx", sheet = "clean") %>%
+  select(PatientID, Entity, Age, Sex, Stage, PTCategory, PTRegimen, PTCycles, PTDuration, DaysSincePT, PTIndication, PTResponse, FTCategory, FTRegimen, FTCycles, FTDuration, DaysUntilFT, FTIndication, FTResponse, Survival, DaysFollowup, Status, Karnofsky)
+```
+
+```{r}
+addmeta <- function(sobj){
+  sobj <- AddMetaData(sobj, rep(str_remove_all(deparse(substitute(sobj)), "[Bcells$]"), times = length(sobj@meta.data$orig.ident)), col.name = "PatientID")
+  meta <- left_join(sobj@meta.data, features, by = "PatientID")
+  rownames(meta)<-rownames(sobj@meta.data)
+  sobj <- AddMetaData(sobj, meta[, 14:33])
+  return(sobj)
+}
+Bcells$LN0217 <- addmeta(Bcells$LN0217)
+Bcells$LN0302 <- addmeta(Bcells$LN0302)
+Bcells$LN0278 <- addmeta(Bcells$LN0278)
+Bcells$LN0193 <- addmeta(Bcells$LN0193)
+Bcells$LN0178 <- addmeta(Bcells$LN0178)
+Bcells$LN0144 <- addmeta(Bcells$LN0144)
+Bcells$LN0132 <- addmeta(Bcells$LN0132)
+Bcells$LN0078 <- addmeta(Bcells$LN0078)
+```
+
+```{r}
+saveRDS(Bcells, file = "data/5primeVDJ/Bcells_clustered.rds")
+saveRDS(Bcells, file = "apps/Bcells/cite-seqB/Objects/5prime.rds")
+```
+
