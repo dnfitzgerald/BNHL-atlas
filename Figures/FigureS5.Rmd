@@ -1,0 +1,178 @@
+---
+title: "Figure S5: Differential transcription factor activity between tumor maturation states, related to Figure 5"
+output: html_document
+date: '2022-11-09'
+---
+
+This script generates the plots in Figure S5. It builds on analysis performed with the scenic package as outlined in https://github.com/aertslab/SCENIC.
+
+```{r}
+library(stringr)
+library(dplyr)
+library(purrr)
+library(ggplot2)
+library(pals)
+library(UpSetR)
+library(Seurat)
+library(ComplexHeatmap)
+library(patchwork)
+library(MAST)
+```
+
+```{r}
+# Set color palette for maturation states
+mathue9 <- c("#ff707c",
+              "#975F24",
+              "#f8d058",
+              "#41d5a8",
+              "#006c0b",
+              "#902395")
+```
+
+# Load Data
+
+## CITE-Seq Object
+```{r, Load seurat object}
+# Load annnotated CITE-Seq data from the B cells of all 51 samples
+Combined <- readRDS("data/Objects/Combined_B_full.rds")
+Idents(Combined) <- "State"
+DimPlot(Combined, cols = mathue9, label = T, repel = T) + theme_void()
+```
+## SCENIC output
+```{r, Load SCENIC GRN output}
+# SCENIC output-target genes are assigned to each TF
+#Note: This is what we use for network re-construction
+reg_files <- list.files("/g/scb2/zaugg/amathiou/2022Jan_Donnacha_SCENIC/20211202_SCENIC_Donnacha/output/regulon", 
+                       pattern = ".*\\(\\+\\)\\.tsv$", 
+                       full.names = T)
+
+df_list <- list()
+for (file in reg_files) {
+  # the regex matches any characters except "/" that are right before a "(+).tsv" and thereby fetches the TF-names
+  TF_name <- str_extract(file, "[^\\/]+(?=\\(\\+\\)\\.tsv)")
+  regulon_df <- read.csv(file, sep = "\t", header = F, col.names = c("target", "count"))
+  regulon_df <- mutate(regulon_df, TF = TF_name) 
+  df_list[[TF_name]] <- regulon_df
+}
+# targene_df_raw contains all target genes for the TFs, even the ones with
+# counts < 80 that were not used for the activity calculation
+empty_df <- data.frame(TF = character(), target = character(),  count = numeric())
+
+targene_df_raw <- purrr:::reduce(df_list, bind_rows, .init = empty_df)
+
+# make another copy with only the target genes that were used for the activity calculation (observed in >80% of runs; set in min-regulon-gene-occurrence in config.yaml
+targene_df <- filter(targene_df_raw, count > 190)
+```
+
+## Add SCENIC TF activity to CITE-Seq Object
+```{r, Add SCENIC TF activity in seurat object}
+scenic_df_wide <- read.csv("/g/scb2/zaugg/amathiou/2022Jan_Donnacha_SCENIC/20211202_SCENIC_Donnacha/output/new_aucell_mtx.tsv", 
+                           sep = "\t", 
+                           row.names = "Cell")
+
+colnames(scenic_df_wide) <- colnames(scenic_df_wide) %>% str_replace(pattern = fixed("..."), "")
+colnames(scenic_df_wide) <- colnames(scenic_df_wide) %>% str_replace(pattern = fixed("."), "-")
+all_TFs <- colnames(scenic_df_wide)
+# Combined[["scenic"]] <- CreateAssayObject(counts = t(scenic_df_wide))
+# saveRDS(Combined, "data/Objects/Combined_B_full.rds")
+```
+
+```{r}
+# remove unnecessary large objects
+rm(targene_df_raw, scenic_df_wide)
+gc()
+```
+
+## Remove non-malignant cells in tumor samples
+```{r}
+# See Malignant.Rmd for the determination of malignant and non-malignant subpopulations based on light chain restriction.
+Combined <- subset(Combined, subset = `Malignancy` == "Normal" & `Entity` != "rLN", invert = TRUE)
+gc()
+```
+# Differential TF activity between tumor maturation states (Supplementary Figure 6)
+```{r, Find markers for maturation stage, eval = FALSE}
+Idents(Combined) <- "State"
+DE_all <- FindAllMarkers(subset(Combined, subset = Malignancy == "Malignant"), 
+                         only.pos = T, 
+                         assay = "RNA",
+                         test.use = "MAST")
+gc()
+saveRDS(DE_all, "output/Bcells/Epigenetics/DE_all.rds")
+```
+
+```{r}
+#For the rLN, find diff. active TFs between maturation stages
+sig_TFs <- list()
+DE_genes <- list()
+
+for (i in unique(DE_all$cluster)){
+  tmp_de <- DE_an[which(DE_all$cluster == i & DE_all$p_val_adj < 10e-16), ]  
+  DE_genes[[i]] <- tmp_de[which(tmp_de$avg_log2FC > 0.4), "gene"]
+}
+```
+
+## Log 2 Odds Ratio Bar Charts
+```{r, fig.width = 8, fig.height = 5}
+for (p in names(DE_genes)){
+  tmp_genes <- DE_genes[[p]]
+  #Make sure genes in grn 
+  count_tfs_genes <- as.data.frame(table(targene_df[which(targene_df$target %in% tmp_genes), "TF"]))
+  if (nrow(count_tfs_genes) > 0){
+    n_disease_genes <- length(unique(targene_df[which(targene_df$target %in% tmp_genes), "target"]))
+    n_targets <- length(unique(targene_df$target))
+    
+    colnames(count_tfs_genes) <- c("TF", "TF_y_D_y")
+    rownames(count_tfs_genes) <- count_tfs_genes$TF
+    count_tfs_genes2 <- as.data.frame(table(targene_df[which(targene_df$TF %in% count_tfs_genes$TF), "TF"]))
+    count_tfs_genes$n_genes <- count_tfs_genes2$Freq
+    rm(count_tfs_genes2)
+    count_tfs_genes <- count_tfs_genes[rev(order(count_tfs_genes$TF_y_D_y)), ]
+    count_tfs_genes$TF_y_D_n <- count_tfs_genes$n_genes - count_tfs_genes$TF_y_D_y #TF yes disease no
+    count_tfs_genes$TF_n_D_y <- n_disease_genes -  count_tfs_genes$TF_y_D_y #TF no disease yes
+    count_tfs_genes$TF_n_D_n <- n_targets -  (count_tfs_genes$TF_n_D_y + count_tfs_genes$n_genes) #TF no disease no
+    
+    table_tfs <- data.frame()
+      
+    for (j in unique(rownames(count_tfs_genes))){
+      cont_table <- data.frame()
+      cont_table['NHL', j] <- count_tfs_genes[j, 'TF_y_D_y']
+      cont_table['NHL', 'rest'] <- count_tfs_genes[j, 'TF_n_D_y']
+      cont_table['healthy', j] <- count_tfs_genes[j, 'TF_y_D_n']
+      cont_table['healthy', 'rest'] <- count_tfs_genes[j, 'TF_n_D_n']
+      table_tfs[j, 'TF'] <- j
+      table_tfs[j, 'Fisher_pvalue'] <- fisher.test(cont_table, alternative='two.sided', conf.int = TRUE)$p.value
+      table_tfs[j, 'OR'] <- fisher.test(cont_table, alternative='two.sided', conf.int = TRUE)$estimate
+    }
+    
+    table_tfs$fdr <- p.adjust(table_tfs$Fisher_pvalue, method="fdr")
+    table_tfs$padj <- ifelse(table_tfs$fdr < 0.1, 
+                            "<0.1", 
+                            "n.s.")
+    #Plot enrichment
+    p3 <- ggplot(table_tfs, aes(x = reorder(TF, log2(OR)), y = log2(OR), fill = padj)) + 
+      geom_bar(stat = "identity") + 
+      theme_bw() + 
+      theme(text = element_text(size = 15), 
+                     axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1), 
+            legend.position = "none") + xlab("TFs") + 
+      scale_fill_manual("padj", values = c("n.s." = "#BF812D", "<0.1" = "#35978F")) +
+      ggtitle(p)
+      
+    plot(p3)
+    ggsave(paste0("figures/Supp7/", p, ".pdf"), plot = p3, width = 10, height = 6)
+    sig_TFs[[p]] <- table_tfs[which(table_tfs$padj < 0.05 & log2(table_tfs$OR)>0), "TF"]
+    #message("Checkpoint")
+  }
+}
+#dev.off()
+all_TFs <- unique(unlist(sig_TFs))
+```
+
+## Upset Plot
+Show the intersections between enriched TFs for each maturation state.
+```{r}
+pdf("figures/Supp7/Upset.pdf", width = 5, height = 3.5)
+upset(fromList(sig_TFs), sets = names(sig_TFs), keep.order = TRUE) #enriched
+dev.off()
+```
+
